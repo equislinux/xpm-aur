@@ -1,7 +1,6 @@
 //! Application services and their dependencies.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use xpm_aur_aur::AurGit;
 use xpm_aur_build::MakepkgBuilder;
@@ -105,9 +104,6 @@ pub fn build_app(deps: AppDependencies) -> App {
         deps.no_confirm,
     )
 }
-
-/// Helper for callers that already share a command runner.
-pub type SharedRunner = Arc<dyn xpm_aur_core::process::CommandRunner>;
 
 /// Confirm a destructive plan unless `--noconfirm` was passed.
 pub(crate) fn confirm(prompt: &str, no_confirm: bool) -> AppResult<()> {

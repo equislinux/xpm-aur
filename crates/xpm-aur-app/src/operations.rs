@@ -6,9 +6,8 @@ use std::time::{Duration, SystemTime};
 
 use xpm_aur_aur::{AurPackage, SearchBy};
 use xpm_aur_core::catalog::{InstallReason, PackageCatalog};
-use xpm_aur_core::dependency::Dependency;
 use xpm_aur_core::version::Evr;
-use xpm_aur_system::{AurRecord, State};
+use xpm_aur_system::AurRecord;
 
 use crate::app::App;
 use crate::error::{AppError, AppResult};
@@ -63,6 +62,7 @@ impl App {
         &self,
         devel: bool,
         only_aur: bool,
+        only_repo: bool,
         install: &InstallOptions,
     ) -> AppResult<UpgradeOutcome> {
         let mut outcome = UpgradeOutcome::default();
@@ -71,6 +71,9 @@ impl App {
             self.xpm.sync()?;
             self.xpm.upgrade()?;
             outcome.official_upgraded = true;
+        }
+        if only_repo {
+            return Ok(outcome);
         }
 
         let state = self.state.load()?;
@@ -170,13 +173,14 @@ impl App {
                 let record = state
                     .packages
                     .entry(info.package_base.clone())
-                    .or_insert_with(|| AurRecord {
-                        base: info.package_base.clone(),
-                        version: candidate.meta.version.to_string(),
-                        commit: String::new(),
-                        installed_at: 0,
-                        explicit,
-                        packages: Vec::new(),
+                    .or_insert_with(|| {
+                        AurRecord::new(
+                            info.package_base.clone(),
+                            candidate.meta.version.to_string(),
+                            String::new(),
+                            Vec::new(),
+                            explicit,
+                        )
                     });
                 if !record.packages.contains(&candidate.meta.name) {
                     record.packages.push(candidate.meta.name.clone());
@@ -291,14 +295,4 @@ fn remove_old_entries(path: &Path, keep_days: u64) -> AppResult<usize> {
         }
     }
     Ok(removed)
-}
-
-/// Used by the CLI to render state without importing system internals.
-pub fn state_packages(state: &State) -> Vec<AurRecord> {
-    state.packages.values().cloned().collect()
-}
-
-/// Convenience for `xpm-aur info` callers that want a single dependency check.
-pub fn is_satisfied_by_installed(names: &[String], dependency: &Dependency) -> bool {
-    names.iter().any(|name| name == &dependency.name)
 }

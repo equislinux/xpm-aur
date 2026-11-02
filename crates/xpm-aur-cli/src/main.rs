@@ -222,7 +222,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Upgrade => {
             install_options.print_only = false;
             install_options.target_asdeps = false;
-            let outcome = app.upgrade(cli.devel, cli.aur, &install_options)?;
+            let outcome = app.upgrade(cli.devel, cli.aur, cli.repo, &install_options)?;
             if outcome.aur_updates.is_empty() {
                 if outcome.official_upgraded {
                     println!("Official packages are up to date; no AUR updates.");
@@ -314,7 +314,8 @@ fn resolve_paths(config: &Config, cli: &Cli) -> AppPaths {
 
 fn parse_by(value: &str) -> Result<SearchBy, String> {
     match value {
-        "name-desc" | "name" => Ok(SearchBy::NameDesc),
+        "name-desc" => Ok(SearchBy::NameDesc),
+        "name" => Ok(SearchBy::Name),
         "provides" => Ok(SearchBy::Provides),
         "depends" => Ok(SearchBy::Depends),
         "makedepends" => Ok(SearchBy::MakeDepends),
