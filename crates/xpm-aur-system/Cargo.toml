@@ -1,0 +1,22 @@
+[package]
+name = "xpm-aur-system"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Host adapters: pacman databases, xpm transactions and AUR state"
+
+[dependencies]
+xpm-aur-core.workspace = true
+xpm-aur-aur.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+flate2 = "1"
+tar = "0.4"
+zstd = "0.13"
+xz2 = "0.1"
+dirs = "6"
+tracing.workspace = true
+fs2 = "0.4"

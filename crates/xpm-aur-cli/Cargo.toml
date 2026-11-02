@@ -1,0 +1,26 @@
+[package]
+name = "xpm-aur-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Command-line interface for xpm-aur"
+
+[[bin]]
+name = "xpm-aur"
+path = "src/main.rs"
+
+[dependencies]
+xpm-aur-core.workspace = true
+xpm-aur-aur.workspace = true
+xpm-aur-system.workspace = true
+xpm-aur-build.workspace = true
+xpm-aur-app.workspace = true
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+dirs = "6"
+serde.workspace = true
+toml = "0.8"
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

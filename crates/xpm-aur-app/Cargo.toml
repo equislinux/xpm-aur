@@ -1,0 +1,18 @@
+[package]
+name = "xpm-aur-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Use cases that compose the AUR, build and xpm adapters"
+
+[dependencies]
+xpm-aur-core.workspace = true
+xpm-aur-aur.workspace = true
+xpm-aur-system.workspace = true
+xpm-aur-build.workspace = true
+serde.workspace = true
+dirs = "6"
+thiserror.workspace = true
+tracing.workspace = true

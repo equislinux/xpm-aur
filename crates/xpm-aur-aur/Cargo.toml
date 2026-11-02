@@ -1,0 +1,17 @@
+[package]
+name = "xpm-aur-aur"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "AUR protocol, git and SRCINFO adapters for xpm-aur"
+
+[dependencies]
+xpm-aur-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+ureq = { version = "2.12", features = ["json"] }
+urlencoding = "2"
+tracing.workspace = true

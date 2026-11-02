@@ -1,0 +1,13 @@
+[package]
+name = "xpm-aur-build"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "makepkg orchestration and package artifact discovery"
+
+[dependencies]
+xpm-aur-core.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

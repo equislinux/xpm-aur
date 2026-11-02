@@ -1,0 +1,32 @@
+# Maintainer: X Linux <x@equislinux>
+pkgname=xpm-aur
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Rust AUR helper for X Linux using xpm for package transactions"
+arch=('x86_64')
+url="https://github.com/equislinux/xpm-aur"
+license=('GPL-3.0-or-later')
+depends=('xpm' 'pacman' 'git' 'xz' 'gcc-libs')
+optdepends=('base-devel: build AUR packages')
+makedepends=('cargo' 'rust')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+    cd "$pkgname-$pkgver"
+    cargo build --release --locked
+}
+
+check() {
+    cd "$pkgname-$pkgver"
+    cargo test --locked
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+    install -Dm755 target/release/xpm-aur "$pkgdir/usr/bin/xpm-aur"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+    install -Dm644 docs/ARCHITECTURE.md "$pkgdir/usr/share/doc/$pkgname/ARCHITECTURE.md"
+    install -Dm644 docs/COMPATIBILITY.md "$pkgdir/usr/share/doc/$pkgname/COMPATIBILITY.md"
+}
