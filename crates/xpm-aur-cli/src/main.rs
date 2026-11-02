@@ -67,6 +67,10 @@ struct Cli {
     #[arg(long, global = true)]
     remove_conflicts: bool,
 
+    /// Skip source package checks (makepkg --nocheck).
+    #[arg(long, global = true)]
+    nocheck: bool,
+
     /// Configuration file.
     #[arg(long, global = true)]
     config: Option<PathBuf>,
@@ -95,7 +99,7 @@ enum Command {
         #[arg(long, default_value = "name-desc", value_parser = parse_by)]
         by: SearchBy,
     },
-    /// Show AUR package information.
+    /// Show package information (official and AUR unless restricted).
     Info { packages: Vec<String> },
     /// Build and install AUR packages (and their official/AUR dependencies).
     Install { packages: Vec<String> },
@@ -109,15 +113,24 @@ enum Command {
     },
     /// Upgrade official packages with xpm and AUR packages with xpm-aur.
     Upgrade,
-    /// List AUR packages tracked by xpm-aur.
+    /// List AUR packages tracked by xpm-aur, or all foreign packages.
     Query {
         #[arg(long)]
         quiet: bool,
+        #[arg(long)]
+        foreign: bool,
     },
     /// Synchronize official databases through xpm.
     Sync,
     /// Adopt AUR packages installed by another helper (e.g. yay).
     Adopt,
+    /// Clone/update AUR PKGBUILDs for inspection (yay -G).
+    #[command(name = "getpkgbuild", visible_alias = "get-pkgbuild")]
+    GetPkgbuild {
+        packages: Vec<String>,
+        #[arg(short = 'p', long)]
+        print: bool,
+    },
     /// Remove cached build trees and artifacts.
     Clean {
         #[arg(long)]
@@ -161,10 +174,11 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     );
     let git = AurGit::new(config.git_url.clone(), runner.clone());
 
+    let run_checks = config.run_checks && !cli.nocheck;
     let mut build_config = BuildConfig::new(paths.package_root.clone());
     build_config.program = config.xpm.clone();
     build_config.srcdest = Some(paths.sources_root.clone());
-    build_config.run_checks = config.run_checks;
+    build_config.run_checks = run_checks;
     build_config.extra_args = config.extra_args.clone();
     let builder = XpmBuilder::new(runner, build_config);
     let state = StateStore::at(state_path);
@@ -177,25 +191,64 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         force_repo: cli.repo,
         rebuild: cli.rebuild,
         remove_conflicts: cli.remove_conflicts,
-        include_check_depends: config.run_checks,
+        include_check_depends: run_checks,
         print_only: cli.print,
         target_asdeps: cli.asdeps,
     };
 
     match cli.command {
         Command::Search { query, by } => {
-            let results = app.search(&query, by)?;
-            print_search(&results);
+            let mut found = false;
+            if !cli.aur {
+                let official = app.search_official(&query)?;
+                if !official.is_empty() {
+                    print_official_search(&official);
+                    found = true;
+                }
+            }
+            if !cli.repo {
+                let results = app.search(&query, by)?;
+                if !results.is_empty() {
+                    if found {
+                        println!();
+                    }
+                    print_search(&results);
+                    found = true;
+                }
+            }
+            if !found {
+                println!("No results.");
+            }
         }
         Command::Info { packages } => {
             if packages.is_empty() {
                 anyhow::bail!("info needs at least one package");
             }
-            let results = app.info(&packages)?;
-            if results.is_empty() {
-                anyhow::bail!("no AUR package found");
+            let mut found = false;
+            if !cli.aur {
+                for package in &packages {
+                    if let Some(candidate) = app.info_official(package)? {
+                        if found {
+                            println!();
+                        }
+                        print_official_info(&candidate);
+                        found = true;
+                    }
+                }
             }
-            print_info(&results);
+            if !cli.repo {
+                let results = app.info(&packages)?;
+                if !results.is_empty() {
+                    if found {
+                        println!();
+                    }
+                    print_info(&results);
+                    found = true;
+                }
+            }
+            if !found {
+                anyhow::bail!("no package found");
+            }
         }
         Command::Install { packages } => {
             if packages.is_empty() {
@@ -234,7 +287,30 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 println!("AUR updated: {}", outcome.aur_updates.join(", "));
             }
         }
-        Command::Query { quiet } => {
+        Command::Query { quiet, foreign } => {
+            if foreign {
+                let packages = app.query_foreign()?;
+                if packages.is_empty() {
+                    if !quiet {
+                        println!("No foreign packages installed.");
+                    }
+                } else {
+                    for package in packages {
+                        if quiet {
+                            println!("{}", package.meta.name);
+                        } else {
+                            let reason = match package.reason {
+                                Some(xpm_aur_core::catalog::InstallReason::Dependency) => {
+                                    "dependency"
+                                }
+                                _ => "explicit",
+                            };
+                            println!("{} {} ({reason})", package.meta.name, package.meta.version);
+                        }
+                    }
+                }
+                return Ok(());
+            }
             let records = app.query()?;
             if records.is_empty() {
                 if !quiet {
@@ -274,6 +350,18 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Adopt => {
             let count = app.adopt()?;
             println!("Adopted {count} AUR package(s).");
+        }
+        Command::GetPkgbuild { packages, print } => {
+            let paths = app.getpkgbuild(&packages)?;
+            for path in paths {
+                if print {
+                    let text = std::fs::read_to_string(&path)
+                        .with_context(|| format!("could not read {}", path.display()))?;
+                    print!("{text}");
+                } else {
+                    println!("{}", path.display());
+                }
+            }
         }
         Command::Clean { all, keep_days } => {
             let removed = app.clean(all, keep_days)?;
@@ -329,6 +417,53 @@ fn parse_by(value: &str) -> Result<SearchBy, String> {
         "maintainer" => Ok(SearchBy::Maintainer),
         "comaintainers" => Ok(SearchBy::Comaintainers),
         other => Err(format!("unknown search field: {other}")),
+    }
+}
+
+fn print_official_search(results: &[xpm_aur_core::catalog::Candidate]) {
+    for package in results {
+        let repo = match &package.source {
+            xpm_aur_core::catalog::CandidateSource::Official { repo, .. } => repo.as_str(),
+            _ => "?",
+        };
+        println!("{}/{} {}", repo, package.meta.name, package.meta.version);
+        if let Some(description) = &package.meta.description {
+            println!("    {description}");
+        }
+    }
+}
+
+fn print_official_info(package: &xpm_aur_core::catalog::Candidate) {
+    let repo = match &package.source {
+        xpm_aur_core::catalog::CandidateSource::Official { repo, .. } => repo.as_str(),
+        _ => "?",
+    };
+    println!("Repository      : {repo}");
+    println!("Name            : {}", package.meta.name);
+    println!("Version         : {}", package.meta.version);
+    if let Some(description) = &package.meta.description {
+        println!("Description     : {description}");
+    }
+    if let Some(url) = &package.meta.url {
+        println!("URL             : {url}");
+    }
+    if !package.meta.depends.is_empty() {
+        let deps = package
+            .meta
+            .depends
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        println!("Depends         : {}", deps.join(" "));
+    }
+    if !package.meta.provides.is_empty() {
+        let provides = package
+            .meta
+            .provides
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        println!("Provides        : {}", provides.join(" "));
     }
 }
 

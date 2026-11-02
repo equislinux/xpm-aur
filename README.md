@@ -15,7 +15,7 @@ package database, and AUR metadata lives in a small, explicit sidecar.
 
 ## Features
 
-- AUR search and package information.
+- Combined official + AUR search and package information (`--aur`/`--repo` to restrict).
 - Recursive dependency resolution across official repositories and AUR.
 - `provides`, version constraints, conflicts, replacements and split packages.
 - Build order for AUR package bases, with build dependencies installed first.
@@ -24,6 +24,8 @@ package database, and AUR metadata lives in a small, explicit sidecar.
 - Tracks `origin=aur`, AUR version and git commit in a sidecar state file.
 - `--devel` rebuilds VCS packages when HEAD changes.
 - `adopt` imports AUR packages installed by yay or another helper.
+- `getpkgbuild` clones/updates AUR PKGBUILDs for inspection.
+- Foreign/installed queries (`-Qm`) and `--nocheck`.
 - yay/pacman-style command forms: `-S`, `-Syu`, `-Ss`, `-Si`, `-Rns`, `-Qm`, `-Sc`.
 
 ## Install

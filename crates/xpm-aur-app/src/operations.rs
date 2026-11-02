@@ -2,10 +2,11 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
+use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
 use xpm_aur_aur::{AurPackage, SearchBy};
-use xpm_aur_core::catalog::{InstallReason, PackageCatalog};
+use xpm_aur_core::catalog::{Candidate, InstallReason, PackageCatalog};
 use xpm_aur_core::version::Evr;
 use xpm_aur_system::AurRecord;
 
@@ -27,6 +28,56 @@ pub struct UpgradeOutcome {
 }
 
 impl App {
+    pub fn search_official(&self, query: &str) -> AppResult<Vec<Candidate>> {
+        Ok(self.catalog.search_official(query)?)
+    }
+
+    pub fn info_official(&self, name: &str) -> AppResult<Option<Candidate>> {
+        Ok(self.catalog.info_official(name)?)
+    }
+
+    /// Installed packages that are not present in any official sync database.
+    /// This is the pacman `-Qm` view, including packages installed by yay.
+    pub fn query_foreign(&self) -> AppResult<Vec<Candidate>> {
+        let official = self.catalog.official_names()?;
+        let mut installed = self.catalog.installed()?;
+        installed.retain(|candidate| !official.contains(&candidate.meta.name));
+        installed.sort_by(|a, b| a.meta.name.cmp(&b.meta.name));
+        Ok(installed)
+    }
+
+    /// Clone/update AUR package bases for inspection (`yay -G`).
+    pub fn getpkgbuild(&self, packages: &[String]) -> AppResult<Vec<PathBuf>> {
+        if packages.is_empty() {
+            return Err(AppError::Core(
+                xpm_aur_core::error::CoreError::InvalidDependency(
+                    "getpkgbuild needs at least one package".into(),
+                ),
+            ));
+        }
+        let infos = self.catalog.aur_info(packages)?;
+        let by_name: BTreeMap<String, AurPackage> = infos
+            .into_iter()
+            .map(|info| (info.name.clone(), info))
+            .collect();
+        let cwd = std::env::current_dir().map_err(|source| AppError::Io {
+            path: ".".into(),
+            source,
+        })?;
+        let mut paths = Vec::new();
+        for name in packages {
+            let Some(info) = by_name.get(name) else {
+                return Err(AppError::Core(
+                    xpm_aur_core::error::CoreError::PackageNotFound(name.clone()),
+                ));
+            };
+            let dir = cwd.join(&info.package_base);
+            self.git.checkout(&info.package_base, &dir)?;
+            paths.push(dir.join("PKGBUILD"));
+        }
+        Ok(paths)
+    }
+
     pub fn sync(&self) -> AppResult<()> {
         self.xpm.sync()?;
         Ok(())

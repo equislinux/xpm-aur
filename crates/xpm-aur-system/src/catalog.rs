@@ -33,6 +33,18 @@ impl SystemCatalog {
             .map_err(|err| CoreError::Catalog(err.to_string()))
     }
 
+    pub fn search_official(&self, query: &str) -> Result<Vec<Candidate>, CoreError> {
+        self.db.search_sync(query).map_err(Into::into)
+    }
+
+    pub fn info_official(&self, name: &str) -> Result<Option<Candidate>, CoreError> {
+        self.db.sync_exact(name).map_err(Into::into)
+    }
+
+    pub fn official_names(&self) -> Result<std::collections::HashSet<String>, CoreError> {
+        self.db.official_names().map_err(Into::into)
+    }
+
     /// Fetch AUR info for exact package names.
     pub fn aur_info(&self, names: &[String]) -> Result<Vec<xpm_aur_aur::AurPackage>, CoreError> {
         self.rpc

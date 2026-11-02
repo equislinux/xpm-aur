@@ -7,7 +7,7 @@
 
 use std::ffi::OsString;
 
-const OPERATIONS: &[char] = &['S', 'Q', 'R', 'U', 'D', 'T', 'F', 'V'];
+const OPERATIONS: &[char] = &['S', 'Q', 'R', 'U', 'D', 'T', 'F', 'G', 'V'];
 
 pub fn rewrite_args(args: Vec<OsString>) -> Vec<OsString> {
     if args.len() < 2 {
@@ -161,6 +161,7 @@ fn map_operation(operation: char, modifiers: &[char]) -> Option<&'static str> {
         'Q' => Some("query"),
         'R' => Some("remove"),
         'U' => Some("install"),
+        'G' => Some("getpkgbuild"),
         'V' if modifiers.is_empty() => Some("--version"),
         _ => None,
     }
@@ -189,7 +190,15 @@ fn operation_flags(operation: char, modifiers: &[char]) -> Vec<&'static str> {
                 flags.push("--recursive");
             }
         }
-        'Q' if count(modifiers, 'q') > 0 => flags.push("--quiet"),
+        'Q' => {
+            if count(modifiers, 'm') > 0 {
+                flags.push("--foreign");
+            }
+            if count(modifiers, 'q') > 0 {
+                flags.push("--quiet");
+            }
+        }
+        'G' if count(modifiers, 'p') > 0 => flags.push("--print"),
         _ => {}
     }
     flags
@@ -253,6 +262,23 @@ mod tests {
             vec!["yay", "install", "--print", "foo"]
         );
         assert_eq!(rewrite(&["yay", "-Qq"]), vec!["yay", "query", "--quiet"]);
+    }
+
+    #[test]
+    fn maps_foreign_query_and_getpkgbuild() {
+        assert_eq!(rewrite(&["yay", "-Qm"]), vec!["yay", "query", "--foreign"]);
+        assert_eq!(
+            rewrite(&["yay", "-Qmq"]),
+            vec!["yay", "query", "--foreign", "--quiet"]
+        );
+        assert_eq!(
+            rewrite(&["yay", "-G", "foo"]),
+            vec!["yay", "getpkgbuild", "foo"]
+        );
+        assert_eq!(
+            rewrite(&["yay", "-Gp", "foo"]),
+            vec!["yay", "getpkgbuild", "--print", "foo"]
+        );
     }
 
     #[test]

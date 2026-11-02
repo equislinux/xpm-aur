@@ -189,6 +189,46 @@ impl PacmanDatabase {
         Ok(candidates)
     }
 
+    /// Search official sync packages by name or description.
+    pub fn search_sync(&self, query: &str) -> Result<Vec<Candidate>, DbError> {
+        let query = query.to_lowercase();
+        let mut seen = std::collections::HashSet::new();
+        let mut results: Vec<Candidate> = self
+            .sync_packages()?
+            .into_iter()
+            .filter(|candidate| {
+                candidate.meta.name.to_lowercase().contains(&query)
+                    || candidate
+                        .meta
+                        .description
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(&query)
+            })
+            .filter(|candidate| seen.insert(candidate.meta.name.clone()))
+            .collect();
+        results.sort_by(|a, b| a.meta.name.cmp(&b.meta.name));
+        Ok(results)
+    }
+
+    /// First exact package in repository priority order.
+    pub fn sync_exact(&self, name: &str) -> Result<Option<Candidate>, DbError> {
+        Ok(self
+            .sync_packages()?
+            .into_iter()
+            .find(|candidate| candidate.meta.name == name))
+    }
+
+    /// All names present in the official sync databases.
+    pub fn official_names(&self) -> Result<std::collections::HashSet<String>, DbError> {
+        Ok(self
+            .sync_packages()?
+            .into_iter()
+            .map(|candidate| candidate.meta.name)
+            .collect())
+    }
+
     fn load_sync(&self) -> Result<Vec<Candidate>, DbError> {
         let sync = self.sync_path();
         let entries = match std::fs::read_dir(&sync) {
