@@ -21,7 +21,7 @@ xpm-aur-core   xpm-aur-aur   xpm-aur-build  xpm-aur-system
 | --- | --- | --- |
 | `xpm-aur-core` | versions, dependencies, candidates, resolver, plan, process port | files, network, commands |
 | `xpm-aur-aur` | AUR RPC v5, AUR git, `.SRCINFO` | pacman, xpm, local state |
-| `xpm-aur-build` | `makepkg` invocation, artifact discovery | resolution, AUR RPC, xpm |
+| `xpm-aur-build` | `xpm build` invocation, JSON artifact discovery | resolution, AUR RPC, xpm internals |
 | `xpm-aur-system` | pacman/xpm DBs, xpm CLI, state sidecar, process runner | resolution policy |
 | `xpm-aur-app` | orchestration and transaction ordering | protocol/file formats |
 | `xpm-aur-cli` | clap, yay argv compatibility, config, output | business rules |
@@ -64,14 +64,14 @@ xpm sync
   → for each AUR base in build order:
        git checkout
        validate .SRCINFO
-       makepkg --nodeps --cleanbuild
+       xpm build (makepkg --nodeps --cleanbuild)
        xpm install split dependencies
        xpm install split explicit packages
        update sidecar state
 ```
 
-Only `xpm-aur` decides the order. The adapters perform exactly one operation per
-call, which keeps failures attributable.
+Only `xpm-aur` decides the order. xpm owns the makepkg invocation; xpm-aur
+handles the AUR/build plan and passes the checkout to `xpm build`.
 
 ## Databases
 

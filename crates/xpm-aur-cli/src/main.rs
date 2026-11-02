@@ -13,7 +13,7 @@ use tracing_subscriber::EnvFilter;
 
 use xpm_aur_app::{App, AppPaths, InstallOptions, RemoveOptions};
 use xpm_aur_aur::{AurGit, AurPackage, AurRpc, SearchBy};
-use xpm_aur_build::{BuildConfig, MakepkgBuilder};
+use xpm_aur_build::{BuildConfig, XpmBuilder};
 use xpm_aur_core::process::CommandRunner;
 use xpm_aur_system::{PacmanDatabase, StateStore, SystemCatalog, SystemRunner, XpmClient};
 
@@ -162,10 +162,11 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     let git = AurGit::new(config.git_url.clone(), runner.clone());
 
     let mut build_config = BuildConfig::new(paths.package_root.clone());
+    build_config.program = config.xpm.clone();
     build_config.srcdest = Some(paths.sources_root.clone());
     build_config.run_checks = config.run_checks;
     build_config.extra_args = config.extra_args.clone();
-    let builder = MakepkgBuilder::new(runner, build_config);
+    let builder = XpmBuilder::new(runner, build_config);
     let state = StateStore::at(state_path);
 
     let app = App::new(catalog, xpm, git, builder, state, paths, cli.no_confirm);

@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use xpm_aur_aur::AurGit;
-use xpm_aur_build::MakepkgBuilder;
+use xpm_aur_build::XpmBuilder;
 use xpm_aur_system::{StateStore, SystemCatalog, XpmClient};
 
 use crate::error::AppResult;
@@ -13,7 +13,7 @@ pub struct App {
     pub(crate) catalog: SystemCatalog,
     pub(crate) xpm: XpmClient,
     pub(crate) git: AurGit,
-    pub(crate) builder: MakepkgBuilder,
+    pub(crate) builder: XpmBuilder,
     pub(crate) state: StateStore,
     pub(crate) paths: AppPaths,
     pub(crate) no_confirm: bool,
@@ -56,7 +56,7 @@ impl App {
         catalog: SystemCatalog,
         xpm: XpmClient,
         git: AurGit,
-        builder: MakepkgBuilder,
+        builder: XpmBuilder,
         state: StateStore,
         paths: AppPaths,
         no_confirm: bool,
@@ -87,7 +87,7 @@ pub struct AppDependencies {
     pub catalog: SystemCatalog,
     pub xpm: XpmClient,
     pub git: AurGit,
-    pub builder: MakepkgBuilder,
+    pub builder: XpmBuilder,
     pub state: StateStore,
     pub paths: AppPaths,
     pub no_confirm: bool,

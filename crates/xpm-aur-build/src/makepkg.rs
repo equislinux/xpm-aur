@@ -1,17 +1,19 @@
-//! `makepkg` runner and artifact discovery.
+//! Adapter for `xpm build`.
 //!
-//! xpm-aur never invokes `makepkg --syncdeps` or `--install`; dependencies are
-//! installed through xpm first and the build uses `--nodeps`.
+//! The build command lives in xpm so every source build in the X ecosystem has
+//! one implementation. xpm-aur only passes the checkout, output directory and
+//! JSON result path.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use serde::Deserialize;
 use xpm_aur_core::process::{CommandRunner, CommandSpec, StdioMode, run_checked};
 
 use crate::error::{BuildError, BuildResult};
 
 /// One built package file.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
 pub struct BuiltPackage {
     pub name: String,
     pub path: PathBuf,
@@ -30,7 +32,7 @@ impl BuildArtifacts {
     }
 }
 
-/// Configuration for one makepkg invocation.
+/// Configuration for one `xpm build` invocation.
 #[derive(Clone, Debug)]
 pub struct BuildConfig {
     pub program: String,
@@ -44,7 +46,7 @@ pub struct BuildConfig {
 impl BuildConfig {
     pub fn new(pkgdest: impl Into<PathBuf>) -> Self {
         Self {
-            program: "makepkg".into(),
+            program: "xpm".into(),
             pkgdest: pkgdest.into(),
             srcdest: None,
             builddir: None,
@@ -54,22 +56,24 @@ impl BuildConfig {
     }
 }
 
-/// Runs makepkg in an AUR checkout.
-pub struct MakepkgBuilder {
+/// Runs `xpm build` in an AUR checkout.
+pub struct XpmBuilder {
     runner: Arc<dyn CommandRunner>,
     config: BuildConfig,
 }
 
-impl MakepkgBuilder {
+#[derive(Deserialize)]
+struct RawArtifacts {
+    pkgbase: String,
+    packages: Vec<BuiltPackage>,
+}
+
+impl XpmBuilder {
     pub fn new(runner: Arc<dyn CommandRunner>, config: BuildConfig) -> Self {
         Self { runner, config }
     }
 
     pub fn build(&self, checkout: &Path, package_base: &str) -> BuildResult<BuildArtifacts> {
-        if is_effective_root() {
-            return Err(BuildError::RunningAsRoot);
-        }
-
         let pkgdest = self.config.pkgdest.join(package_base);
         if pkgdest.exists() {
             std::fs::remove_dir_all(&pkgdest).map_err(|source| BuildError::Io {
@@ -82,105 +86,113 @@ impl MakepkgBuilder {
             source,
         })?;
 
+        let json_path = pkgdest.join(".xpm-build.json");
         let mut spec = CommandSpec::new(&self.config.program)
-            .arg("--nodeps")
-            .arg("--noconfirm")
-            .arg("--cleanbuild")
-            .arg("--force")
-            .arg("--noprogressbar")
-            .cwd(checkout)
-            .env("PKGDEST", &pkgdest)
-            .env("PKGEXT", ".pkg.tar.zst")
+            .arg("build")
+            .arg(checkout)
+            .arg("--pkgdest")
+            .arg(&pkgdest)
+            .arg("--json")
+            .arg(&json_path)
             .stdio(StdioMode::Inherit);
 
         if !self.config.run_checks {
             spec = spec.arg("--nocheck");
         }
         if let Some(srcdest) = &self.config.srcdest {
-            spec = spec.env("SRCDEST", srcdest).env("SRCPKGDEST", srcdest);
+            spec = spec.arg("--srcdest").arg(srcdest);
         }
         if let Some(builddir) = &self.config.builddir {
-            spec = spec.env("BUILDDIR", builddir);
+            spec = spec.arg("--builddir").arg(builddir);
         }
-        for arg in &self.config.extra_args {
-            spec = spec.arg(arg);
+        if !self.config.extra_args.is_empty() {
+            spec = spec.arg("--");
+            for arg in &self.config.extra_args {
+                spec = spec.arg(arg);
+            }
         }
 
         let output = run_checked(self.runner.as_ref(), &spec)?;
         let _ = output;
 
-        let mut packages = Vec::new();
-        let entries = std::fs::read_dir(&pkgdest).map_err(|source| BuildError::Io {
-            path: pkgdest.display().to_string(),
+        let text = std::fs::read_to_string(&json_path).map_err(|source| BuildError::Io {
+            path: json_path.display().to_string(),
             source,
         })?;
-        for entry in entries {
-            let entry = entry.map_err(|source| BuildError::Io {
-                path: pkgdest.display().to_string(),
-                source,
-            })?;
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-            let Some(filename) = path.file_name().and_then(|name| name.to_str()) else {
-                continue;
-            };
-            if !filename.ends_with(".pkg.tar.zst") {
-                continue;
-            }
-            let name = package_name_from_filename(filename)?;
-            packages.push(BuiltPackage { name, path });
-        }
+        let raw: RawArtifacts = serde_json::from_str(&text).map_err(|source| BuildError::Json {
+            path: json_path.display().to_string(),
+            source,
+        })?;
 
-        if packages.is_empty() {
-            return Err(BuildError::NoArtifacts(pkgdest.display().to_string()));
-        }
-        packages.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(BuildArtifacts {
-            base: package_base.to_string(),
-            packages,
+            base: raw.pkgbase,
+            packages: raw.packages,
         })
     }
-}
-
-/// Extract `name` from `name-pkgver-pkgrel-arch.pkg.tar.zst`.
-pub fn package_name_from_filename(filename: &str) -> BuildResult<String> {
-    let Some(stem) = filename.strip_suffix(".pkg.tar.zst") else {
-        return Err(BuildError::InvalidPackageFilename(filename.into()));
-    };
-    let mut parts = stem.rsplitn(4, '-');
-    let _arch = parts.next();
-    let _pkgrel = parts.next();
-    let _pkgver = parts.next();
-    let name = parts.next();
-    match name {
-        Some(name) if !name.is_empty() => Ok(name.to_string()),
-        _ => Err(BuildError::InvalidPackageFilename(filename.into())),
-    }
-}
-
-fn is_effective_root() -> bool {
-    use std::os::unix::fs::MetadataExt;
-    std::fs::metadata("/proc/self")
-        .map(|metadata| metadata.uid() == 0)
-        .unwrap_or(false)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    use xpm_aur_core::process::{CommandOutput, ProcessError};
+
+    #[derive(Default)]
+    struct FakeXpm {
+        calls: Mutex<Vec<CommandSpec>>,
+    }
+
+    impl CommandRunner for FakeXpm {
+        fn run(&self, spec: &CommandSpec) -> Result<CommandOutput, ProcessError> {
+            self.calls.lock().unwrap().push(spec.clone());
+            let json = spec
+                .args
+                .iter()
+                .position(|arg| arg == "--json")
+                .and_then(|index| spec.args.get(index + 1))
+                .expect("--json path");
+            let json = std::path::PathBuf::from(json);
+            std::fs::write(
+                json,
+                r#"{"source_dir":"/tmp/demo","pkgbase":"demo","packages":[{"name":"demo","path":"/tmp/demo/demo-1.0-1-any.pkg.tar.zst"}]}"#,
+            )
+            .unwrap();
+            Ok(CommandOutput {
+                success: true,
+                code: Some(0),
+                stdout: String::new(),
+                stderr: String::new(),
+            })
+        }
+    }
 
     #[test]
-    fn parses_package_names_with_hyphens() {
-        assert_eq!(
-            package_name_from_filename("foo-bar-1.2.3-4-x86_64.pkg.tar.zst").unwrap(),
-            "foo-bar"
-        );
-        assert_eq!(
-            package_name_from_filename("foo-1:2.0-1-any.pkg.tar.zst").unwrap(),
-            "foo"
-        );
-        assert!(package_name_from_filename("invalid.tar.zst").is_err());
+    fn delegates_builds_to_xpm_and_parses_json() {
+        let runner = Arc::new(FakeXpm::default());
+        let pkgdest = std::env::temp_dir().join(format!(
+            "xpm-aur-build-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let builder = XpmBuilder::new(runner.clone(), BuildConfig::new(&pkgdest));
+        let checkout = std::env::temp_dir().join("xpm-aur-build-checkout");
+        let artifacts = builder.build(&checkout, "demo").unwrap();
+        assert_eq!(artifacts.base, "demo");
+        assert_eq!(artifacts.packages[0].name, "demo");
+
+        let calls = runner.calls.lock().unwrap();
+        let args: Vec<String> = calls[0]
+            .args
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args[0], "build");
+        assert!(args.contains(&"--json".to_string()));
+        assert!(args.contains(&"--pkgdest".to_string()));
+        let _ = std::fs::remove_dir_all(pkgdest);
     }
 }
