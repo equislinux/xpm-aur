@@ -8,6 +8,7 @@ pub mod app;
 pub mod error;
 pub mod install;
 pub mod operations;
+pub mod progress;
 
 pub use app::{App, AppDependencies, AppPaths, build_app};
 pub use error::{AppError, AppResult};
