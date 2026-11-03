@@ -19,7 +19,8 @@ package database, and AUR metadata lives in a small, explicit sidecar.
 - Recursive dependency resolution across official repositories and AUR.
 - `provides`, version constraints, conflicts, replacements and split packages.
 - Build order for AUR package bases, with build dependencies installed first.
-- Builds through `xpm build`; xpm installs the resulting packages.
+- Builds through `xpm build`; clean pacstrap/systemd-nspawn chroots are used by default.
+- xpm installs the resulting packages.
 - Installs, removes and upgrades through xpm.
 - Tracks `origin=aur`, AUR version and git commit in a sidecar state file.
 - `--devel` rebuilds VCS packages when HEAD changes.
@@ -43,7 +44,8 @@ From the X repository:
 xpm install xpm-aur
 ```
 
-Runtime requirements: `xpm >= 0.1.0-5`, `pacman` (for `makepkg`), `git`, `base-devel`,
+Runtime requirements: `xpm >= 0.1.0-7`, `pacman` (for `makepkg`), `git`, `base-devel`,
+`arch-install-scripts` and `systemd-nspawn` (for clean chroots),
 and a normal user for building. `xpm-aur` must not be run as root; it invokes
 the configured sudo command for xpm transactions.
 
@@ -117,6 +119,7 @@ sudo = "sudo"          # empty disables sudo
 
 [build]
 run_checks = true
+chroot = true
 extra_args = []
 
 [paths]

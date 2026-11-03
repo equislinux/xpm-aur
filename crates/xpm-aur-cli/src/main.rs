@@ -71,6 +71,10 @@ struct Cli {
     #[arg(long, global = true)]
     nocheck: bool,
 
+    /// Disable the clean chroot build.
+    #[arg(long, global = true)]
+    no_chroot: bool,
+
     /// Configuration file.
     #[arg(long, global = true)]
     config: Option<PathBuf>,
@@ -179,6 +183,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     build_config.program = config.xpm.clone();
     build_config.srcdest = Some(paths.sources_root.clone());
     build_config.run_checks = run_checks;
+    build_config.chroot = config.chroot && !cli.no_chroot;
     build_config.extra_args = config.extra_args.clone();
     let builder = XpmBuilder::new(runner, build_config);
     let state = StateStore::at(state_path);

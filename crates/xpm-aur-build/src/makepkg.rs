@@ -40,6 +40,9 @@ pub struct BuildConfig {
     pub srcdest: Option<PathBuf>,
     pub builddir: Option<PathBuf>,
     pub run_checks: bool,
+    /// Build in a clean pacstrap/systemd-nspawn chroot.
+    pub chroot: bool,
+    pub chroot_dir: Option<PathBuf>,
     pub extra_args: Vec<String>,
 }
 
@@ -51,6 +54,8 @@ impl BuildConfig {
             srcdest: None,
             builddir: None,
             run_checks: true,
+            chroot: false,
+            chroot_dir: None,
             extra_args: Vec::new(),
         }
     }
@@ -98,6 +103,12 @@ impl XpmBuilder {
 
         if !self.config.run_checks {
             spec = spec.arg("--nocheck");
+        }
+        if self.config.chroot {
+            spec = spec.arg("--chroot");
+            if let Some(dir) = &self.config.chroot_dir {
+                spec = spec.arg("--chroot-dir").arg(dir);
+            }
         }
         if let Some(srcdest) = &self.config.srcdest {
             spec = spec.arg("--srcdest").arg(srcdest);

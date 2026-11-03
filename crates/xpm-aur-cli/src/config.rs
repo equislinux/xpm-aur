@@ -27,6 +27,7 @@ pub struct AurConfig {
 #[serde(default)]
 pub struct BuildSettings {
     pub run_checks: bool,
+    pub chroot: bool,
     pub extra_args: Vec<String>,
 }
 
@@ -34,6 +35,7 @@ impl Default for BuildSettings {
     fn default() -> Self {
         Self {
             run_checks: true,
+            chroot: true,
             extra_args: Vec::new(),
         }
     }
@@ -72,6 +74,7 @@ pub struct Config {
     pub xpm: String,
     pub sudo: Option<String>,
     pub run_checks: bool,
+    pub chroot: bool,
     pub extra_args: Vec<String>,
     pub paths: PathSettings,
     pub state: Option<PathBuf>,
@@ -85,6 +88,7 @@ impl Default for Config {
             xpm: "xpm".into(),
             sudo: Some("sudo".into()),
             run_checks: true,
+            chroot: true,
             extra_args: Vec::new(),
             paths: PathSettings::default(),
             state: None,
@@ -118,6 +122,7 @@ impl Config {
             xpm: file.commands.xpm,
             sudo: (!file.commands.sudo.is_empty()).then_some(file.commands.sudo),
             run_checks: file.build.run_checks,
+            chroot: file.build.chroot,
             extra_args: file.build.extra_args,
             paths: file.paths.clone(),
             state: file.paths.state.as_deref().map(expand_path),
