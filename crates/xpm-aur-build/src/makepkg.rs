@@ -78,7 +78,12 @@ impl XpmBuilder {
         Self { runner, config }
     }
 
-    pub fn build(&self, checkout: &Path, package_base: &str) -> BuildResult<BuildArtifacts> {
+    pub fn build(
+        &self,
+        checkout: &Path,
+        package_base: &str,
+        preinstall: &[PathBuf],
+    ) -> BuildResult<BuildArtifacts> {
         let pkgdest = self.config.pkgdest.join(package_base);
         if pkgdest.exists() {
             std::fs::remove_dir_all(&pkgdest).map_err(|source| BuildError::Io {
@@ -115,6 +120,9 @@ impl XpmBuilder {
         }
         if let Some(builddir) = &self.config.builddir {
             spec = spec.arg("--builddir").arg(builddir);
+        }
+        for package in preinstall {
+            spec = spec.arg("--preinstall").arg(package);
         }
         if !self.config.extra_args.is_empty() {
             spec = spec.arg("--");
@@ -191,7 +199,7 @@ mod tests {
         ));
         let builder = XpmBuilder::new(runner.clone(), BuildConfig::new(&pkgdest));
         let checkout = std::env::temp_dir().join("xpm-aur-build-checkout");
-        let artifacts = builder.build(&checkout, "demo").unwrap();
+        let artifacts = builder.build(&checkout, "demo", &[]).unwrap();
         assert_eq!(artifacts.base, "demo");
         assert_eq!(artifacts.packages[0].name, "demo");
 

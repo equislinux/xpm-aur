@@ -115,8 +115,10 @@ impl App {
 
         let mut aur_bases = 0;
         let mut aur_packages = 0;
+        let mut preinstall = Vec::new();
         for build in &plan.aur {
-            self.build_and_install(build, &plan)?;
+            let built = self.build_and_install(build, &plan, &preinstall)?;
+            preinstall.extend(built);
             aur_bases += 1;
             aur_packages += build.packages.len();
         }
@@ -134,7 +136,8 @@ impl App {
         &self,
         build: &xpm_aur_core::plan::AurBuild,
         plan: &InstallPlan,
-    ) -> AppResult<()> {
+        preinstall: &[std::path::PathBuf],
+    ) -> AppResult<Vec<std::path::PathBuf>> {
         let checkout = self.paths.build_root.join(&build.base);
         tracing::info!(base = %build.base, "cloning/updating AUR package base");
         let commit = self.git.checkout(&build.base, &checkout)?;
@@ -148,7 +151,7 @@ impl App {
             }
         }
 
-        let artifacts = self.builder.build(&checkout, &build.base)?;
+        let artifacts = self.builder.build(&checkout, &build.base, preinstall)?;
         let mut dependency_files = Vec::new();
         let mut explicit_files = Vec::new();
         for package in &build.packages {
@@ -193,7 +196,15 @@ impl App {
         // the resolved transaction.
         let _ = plan;
         tracing::info!(base = %build.base, %commit, "AUR package base installed");
-        Ok(())
+        Ok(build
+            .packages
+            .iter()
+            .filter_map(|package| {
+                artifacts
+                    .get(&package.name)
+                    .map(|artifact| artifact.path.clone())
+            })
+            .collect())
     }
 
     pub fn print_plan(&self, plan: &InstallPlan) {
