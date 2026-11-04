@@ -237,15 +237,20 @@ impl<'a> Resolver<'a> {
 
     fn choose_candidate(&self, request: &Request) -> CoreResult<Option<Candidate>> {
         let dependency = &request.dependency;
+        // --aur/--repo restrict the requested targets; their dependencies may
+        // still come from either source. Forcing every transitive dependency
+        // to AUR makes normal AUR builds fail on official build tools.
+        let force_aur = self.options.force_aur && request.explicit;
+        let force_repo = self.options.force_repo && request.explicit;
 
-        if !self.options.force_aur {
+        if !force_aur {
             let candidates = self.catalog.official_candidates(dependency)?;
             if let Some(candidate) = choose_best(candidates, dependency) {
                 return Ok(Some(candidate));
             }
         }
 
-        if !self.options.force_repo {
+        if !force_repo {
             let candidates = self.catalog.aur_candidates(dependency)?;
             if let Some(candidate) = choose_best(candidates, dependency) {
                 return Ok(Some(candidate));
