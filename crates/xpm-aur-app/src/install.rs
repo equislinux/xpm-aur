@@ -1,10 +1,20 @@
 //! Install use case.
 
-use xpm_aur_core::plan::InstallPlan;
+use std::path::PathBuf;
+
+use xpm_aur_core::plan::{AurBuild, InstallPlan};
 use xpm_aur_core::resolver::{ResolveOptions, Resolver};
 
 use crate::app::App;
 use crate::error::{AppError, AppResult};
+use crate::scheduler::{self, BuiltBase};
+
+/// Default build concurrency: 2, reduced on machines with fewer CPUs.
+pub fn default_jobs() -> usize {
+    std::thread::available_parallelism()
+        .map(|count| count.get().min(2))
+        .unwrap_or(2)
+}
 
 /// User-facing options for resolving and installing.
 #[derive(Clone, Debug)]
@@ -17,6 +27,8 @@ pub struct InstallOptions {
     pub include_check_depends: bool,
     pub print_only: bool,
     pub target_asdeps: bool,
+    /// Maximum number of AUR package bases built concurrently.
+    pub jobs: usize,
 }
 
 impl Default for InstallOptions {
@@ -30,6 +42,7 @@ impl Default for InstallOptions {
             include_check_depends: true,
             print_only: false,
             target_asdeps: false,
+            jobs: default_jobs(),
         }
     }
 }
@@ -113,17 +126,16 @@ impl App {
         self.xpm
             .install_official(&official_explicit, false, options.needed)?;
 
-        let mut aur_bases = 0;
-        let mut aur_packages = 0;
-        let mut preinstall = Vec::new();
+        let aur_bases = plan.aur.len();
+        let aur_packages = plan.aur.iter().map(|build| build.packages.len()).sum();
         let progress =
             crate::progress::PhaseProgress::new(plan.aur.iter().map(|build| build.base.as_str()));
-        for build in &plan.aur {
-            let built = self.build_and_install(build, &plan, &preinstall, &progress)?;
-            preinstall.extend(built);
-            aur_bases += 1;
-            aur_packages += build.packages.len();
-        }
+        scheduler::run(
+            &plan.aur,
+            options.jobs,
+            |build, preinstall| self.build_base(build, preinstall, &progress),
+            |build, built| self.install_base(build, built, &progress),
+        )?;
 
         Ok(InstallOutcome {
             official: plan.official.len(),
@@ -134,13 +146,13 @@ impl App {
         })
     }
 
-    fn build_and_install(
+    /// Clone and build one base without touching xpm's package database.
+    fn build_base(
         &self,
-        build: &xpm_aur_core::plan::AurBuild,
-        plan: &InstallPlan,
-        preinstall: &[std::path::PathBuf],
+        build: &AurBuild,
+        preinstall: &[PathBuf],
         progress: &crate::progress::PhaseProgress,
-    ) -> AppResult<Vec<std::path::PathBuf>> {
+    ) -> AppResult<BuiltBase> {
         let checkout = self.paths.build_root.join(&build.base);
         progress.print(&build.base, 0, 3, "checkout");
         tracing::info!(base = %build.base, "cloning/updating AUR package base");
@@ -157,21 +169,17 @@ impl App {
 
         progress.print(&build.base, 1, 3, "building");
         let artifacts = self.builder.build(&checkout, &build.base, preinstall)?;
-        let mut dependency_files = Vec::new();
-        let mut explicit_files = Vec::new();
-        for package in &build.packages {
-            let artifact =
-                artifacts
-                    .get(&package.name)
-                    .ok_or_else(|| AppError::MissingArtifact {
-                        base: build.base.clone(),
-                    })?;
-            if package.explicit {
-                explicit_files.push(artifact.path.clone());
-            } else {
-                dependency_files.push(artifact.path.clone());
-            }
-        }
+        Ok(BuiltBase { commit, artifacts })
+    }
+
+    /// Install one finished base and update the sidecar. Always runs serially.
+    fn install_base(
+        &self,
+        build: &AurBuild,
+        built: &BuiltBase,
+        progress: &crate::progress::PhaseProgress,
+    ) -> AppResult<()> {
+        let (dependency_files, explicit_files) = self.partition_artifacts(build, built)?;
 
         // Install split dependencies before explicit split packages so the
         // explicit package's dependency check can see them.
@@ -193,25 +201,43 @@ impl App {
         self.state.update(|state| {
             state.packages.insert(
                 build.base.clone(),
-                xpm_aur_system::AurRecord::new(&build.base, version, &commit, packages, explicit),
+                xpm_aur_system::AurRecord::new(
+                    &build.base,
+                    version,
+                    &built.commit,
+                    packages,
+                    explicit,
+                ),
             );
         })?;
 
-        // Keep the plan argument meaningful for future hooks (e.g. install
-        // reason reconciliation). It also documents that the build belongs to
-        // the resolved transaction.
-        let _ = plan;
         progress.print(&build.base, 3, 3, "done");
-        tracing::info!(base = %build.base, %commit, "AUR package base installed");
-        Ok(build
-            .packages
-            .iter()
-            .filter_map(|package| {
-                artifacts
+        tracing::info!(base = %build.base, commit = %built.commit, "AUR package base installed");
+        Ok(())
+    }
+
+    fn partition_artifacts(
+        &self,
+        build: &AurBuild,
+        built: &BuiltBase,
+    ) -> AppResult<(Vec<PathBuf>, Vec<PathBuf>)> {
+        let mut dependency_files = Vec::new();
+        let mut explicit_files = Vec::new();
+        for package in &build.packages {
+            let artifact =
+                built
+                    .artifacts
                     .get(&package.name)
-                    .map(|artifact| artifact.path.clone())
-            })
-            .collect())
+                    .ok_or_else(|| AppError::MissingArtifact {
+                        base: build.base.clone(),
+                    })?;
+            if package.explicit {
+                explicit_files.push(artifact.path.clone());
+            } else {
+                dependency_files.push(artifact.path.clone());
+            }
+        }
+        Ok((dependency_files, explicit_files))
     }
 
     pub fn print_plan(&self, plan: &InstallPlan) {

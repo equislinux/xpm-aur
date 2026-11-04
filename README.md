@@ -18,7 +18,8 @@ package database, and AUR metadata lives in a small, explicit sidecar.
 - Combined official + AUR search and package information (`--aur`/`--repo` to restrict).
 - Recursive dependency resolution across official repositories and AUR.
 - `provides`, version constraints, conflicts, replacements and split packages.
-- Build order for AUR package bases, with build dependencies installed first.
+- Build order for AUR package bases; independent bases build in parallel while
+  xpm installs and state updates stay sequential.
 - Builds through `xpm build`; clean pacstrap/systemd-nspawn chroots are used by default.
 - xpm installs the resulting packages.
 - Installs, removes and upgrades through xpm.
@@ -59,6 +60,7 @@ xpm-aur install yay
 xpm-aur install --print yay          # resolve and print the plan only
 xpm-aur install --aur --rebuild foo-git
 xpm-aur install --remove-conflicts foo-git
+xpm-aur install -j 4 a b c            # build up to four bases at once
 
 xpm-aur upgrade                      # xpm upgrade + AUR updates
 xpm-aur upgrade --aur --devel        # AUR only, VCS HEAD checks
@@ -91,8 +93,10 @@ xpm-aur -Sc
 2. The resolver reads installed packages from pacman's local database (where
    xpm mirrors its transactions) and official metadata from xpm's sync DB.
 3. Official packages are installed by xpm as one batch.
-4. AUR package bases are cloned/updated, built in dependency order with
-   `xpm build`, and the resulting package files are installed with `xpm install`.
+4. AUR package bases are cloned/updated and built with `xpm build`. Independent
+   bases build concurrently (default: up to 2, or `--jobs`); dependency levels
+   still build only after their prerequisites. Each finished base is installed
+   with `xpm install` serially, so package transactions never overlap.
 5. `xpm-aur` records the AUR base, commit, version and split outputs in
    `$XDG_STATE_HOME/xpm-aur/state.json`.
 
@@ -121,6 +125,7 @@ sudo = "sudo"          # empty disables sudo
 run_checks = true
 chroot = true
 extra_args = []
+jobs = 2               # parallel AUR bases; 0 = auto
 
 [paths]
 build = "~/.cache/xpm-aur/build"

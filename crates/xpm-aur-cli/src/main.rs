@@ -75,6 +75,10 @@ struct Cli {
     #[arg(long, global = true)]
     no_chroot: bool,
 
+    /// Maximum AUR package bases to build concurrently (0 = automatic).
+    #[arg(short = 'j', long, global = true)]
+    jobs: Option<usize>,
+
     /// Configuration file.
     #[arg(long, global = true)]
     config: Option<PathBuf>,
@@ -190,6 +194,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
 
     let app = App::new(catalog, xpm, git, builder, state, paths, cli.no_confirm);
 
+    let jobs = match cli.jobs.or(config.jobs) {
+        Some(0) | None => xpm_aur_app::default_jobs(),
+        Some(jobs) => jobs,
+    };
     let mut install_options = InstallOptions {
         needed: cli.needed,
         force_aur: cli.aur,
@@ -199,6 +207,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         include_check_depends: run_checks,
         print_only: cli.print,
         target_asdeps: cli.asdeps,
+        jobs,
     };
 
     match cli.command {

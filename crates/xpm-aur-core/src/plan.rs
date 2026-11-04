@@ -25,6 +25,9 @@ pub struct AurPackagePlan {
 pub struct AurBuild {
     pub base: String,
     pub packages: Vec<AurPackagePlan>,
+    /// Other AUR bases whose artifacts must be built and installed first.
+    #[serde(default)]
+    pub depends_on: Vec<String>,
 }
 
 /// A package that must be removed before the transaction.

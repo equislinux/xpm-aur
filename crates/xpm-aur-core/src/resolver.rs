@@ -429,6 +429,7 @@ fn build_aur_plan(nodes: &BTreeMap<String, AurNode>) -> CoreResult<Vec<AurBuild>
     }
 
     let mut edges: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut depends_on: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut indegree: BTreeMap<String, usize> =
         bases.keys().cloned().map(|base| (base, 0)).collect();
 
@@ -454,6 +455,10 @@ fn build_aur_plan(nodes: &BTreeMap<String, AurNode>) -> CoreResult<Vec<AurBuild>
                     .or_default()
                     .insert(base.clone())
                 {
+                    depends_on
+                        .entry(base.clone())
+                        .or_default()
+                        .insert(provider_base.clone());
                     *indegree.get_mut(base).expect("known base") += 1;
                 }
             }
@@ -502,7 +507,15 @@ fn build_aur_plan(nodes: &BTreeMap<String, AurNode>) -> CoreResult<Vec<AurBuild>
                 })
                 .collect();
             packages.sort_by(|a, b| a.name.cmp(&b.name));
-            AurBuild { base, packages }
+            AurBuild {
+                depends_on: depends_on
+                    .remove(&base)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .collect(),
+                base,
+                packages,
+            }
         })
         .collect())
 }
@@ -628,6 +641,38 @@ mod tests {
         assert_eq!(plan.aur.len(), 2);
         assert_eq!(plan.aur[0].base, "libaur");
         assert_eq!(plan.aur[1].base, "app");
+    }
+
+    #[test]
+    fn records_base_dependency_levels() {
+        let mut lib = meta("lib", "1.0-1");
+        lib.base = "lib".into();
+
+        let mut app = meta("app", "1.0-1");
+        app.base = "app".into();
+        app.depends = vec![dep("lib")];
+
+        let mut tool = meta("tool", "1.0-1");
+        tool.base = "tool".into();
+
+        let catalog = FakeCatalog::new()
+            .aur_meta(lib)
+            .aur_meta(app)
+            .aur_meta(tool);
+        let plan = resolve(&catalog, &["app", "tool"]).unwrap();
+
+        let by_base = |name: &str| plan.aur.iter().find(|build| build.base == name).unwrap();
+        assert!(by_base("lib").depends_on.is_empty());
+        assert!(by_base("tool").depends_on.is_empty());
+        assert_eq!(by_base("app").depends_on, vec!["lib".to_string()]);
+
+        let first_level: Vec<&str> = plan
+            .aur
+            .iter()
+            .filter(|build| build.depends_on.is_empty())
+            .map(|build| build.base.as_str())
+            .collect();
+        assert_eq!(first_level, vec!["lib", "tool"]);
     }
 
     #[test]

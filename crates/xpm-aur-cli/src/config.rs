@@ -29,6 +29,9 @@ pub struct BuildSettings {
     pub run_checks: bool,
     pub chroot: bool,
     pub extra_args: Vec<String>,
+    /// Maximum number of AUR package bases built concurrently. `0` or `None`
+    /// selects the automatic default.
+    pub jobs: Option<usize>,
 }
 
 impl Default for BuildSettings {
@@ -37,6 +40,7 @@ impl Default for BuildSettings {
             run_checks: true,
             chroot: true,
             extra_args: Vec::new(),
+            jobs: None,
         }
     }
 }
@@ -76,6 +80,7 @@ pub struct Config {
     pub run_checks: bool,
     pub chroot: bool,
     pub extra_args: Vec<String>,
+    pub jobs: Option<usize>,
     pub paths: PathSettings,
     pub state: Option<PathBuf>,
 }
@@ -90,6 +95,7 @@ impl Default for Config {
             run_checks: true,
             chroot: true,
             extra_args: Vec::new(),
+            jobs: None,
             paths: PathSettings::default(),
             state: None,
         }
@@ -124,6 +130,7 @@ impl Config {
             run_checks: file.build.run_checks,
             chroot: file.build.chroot,
             extra_args: file.build.extra_args,
+            jobs: file.build.jobs,
             paths: file.paths.clone(),
             state: file.paths.state.as_deref().map(expand_path),
         })

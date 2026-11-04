@@ -9,8 +9,9 @@ pub mod error;
 pub mod install;
 pub mod operations;
 pub mod progress;
+mod scheduler;
 
 pub use app::{App, AppDependencies, AppPaths, build_app};
 pub use error::{AppError, AppResult};
-pub use install::{InstallOptions, InstallOutcome};
+pub use install::{InstallOptions, InstallOutcome, default_jobs};
 pub use operations::{RemoveOptions, UpgradeOutcome};

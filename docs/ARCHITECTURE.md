@@ -45,7 +45,8 @@ The resolver:
 3. prefers exact names over `provides`;
 4. recursively resolves AUR runtime, make and check dependencies;
 5. groups split packages by package base;
-6. topologically sorts bases so dependencies build first;
+6. topologically sorts bases so dependencies build first and records each
+   base's direct `depends_on` edges in the plan;
 7. detects conflicts/replacements and optionally plans removals;
 8. emits an immutable `InstallPlan`.
 
@@ -61,17 +62,21 @@ xpm sync
   → remove conflicts/replacements (optional)
   → xpm install official dependencies
   → xpm install official explicit targets
-  → for each AUR base in build order:
-       git checkout
-       validate .SRCINFO
-       xpm build (makepkg --nodeps --cleanbuild)
-       xpm install split dependencies
-       xpm install split explicit packages
-       update sidecar state
+  → scheduler over AUR bases:
+       build ready bases concurrently (up to the job limit):
+         git checkout
+         validate .SRCINFO
+         xpm build (makepkg --nodeps --cleanbuild)
+       as each build finishes, on the calling thread:
+         xpm install split dependencies
+         xpm install split explicit packages
+         update sidecar state
 ```
 
 Only `xpm-aur` decides the order. xpm owns the makepkg invocation; xpm-aur
-handles the AUR/build plan and passes the checkout to `xpm build`.
+handles the AUR/build plan and passes the checkout to `xpm build`. A base is
+ready only after every base in its `depends_on` list is built and installed.
+Builds may overlap; xpm installs and sidecar updates are serialized.
 
 ## Databases
 
