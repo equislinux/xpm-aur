@@ -111,9 +111,14 @@ impl XpmBuilder {
         }
         if self.config.chroot {
             spec = spec.arg("--chroot");
-            if let Some(dir) = &self.config.chroot_dir {
-                spec = spec.arg("--chroot-dir").arg(dir);
-            }
+            // One chroot per package base: parallel AUR builds must never
+            // share pacstrap/root or one build can unmount files from another.
+            let root = self
+                .config
+                .chroot_dir
+                .clone()
+                .unwrap_or_else(|| PathBuf::from("/var/lib/archbuild/xpm-aur"));
+            spec = spec.arg("--chroot-dir").arg(root.join(package_base));
         }
         if let Some(srcdest) = &self.config.srcdest {
             spec = spec.arg("--srcdest").arg(srcdest);
