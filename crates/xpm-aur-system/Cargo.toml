@@ -18,5 +18,4 @@ tar = "0.4"
 zstd = "0.13"
 xz2 = "0.1"
 dirs = "6"
-tracing.workspace = true
 fs2 = "0.4"
