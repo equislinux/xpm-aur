@@ -12,7 +12,6 @@ xpm-aur-core.workspace = true
 xpm-aur-aur.workspace = true
 xpm-aur-system.workspace = true
 xpm-aur-build.workspace = true
-serde.workspace = true
 dirs = "6"
 thiserror.workspace = true
 tracing.workspace = true

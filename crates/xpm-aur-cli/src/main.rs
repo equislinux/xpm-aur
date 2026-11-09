@@ -560,10 +560,3 @@ fn init_tracing(verbose: u8) {
         .with_target(false)
         .try_init();
 }
-
-/// Keeps `Context` available for future fallible setup steps and documents the
-/// expected anyhow usage in this binary.
-#[allow(dead_code)]
-fn _context<T>(value: anyhow::Result<T>) -> anyhow::Result<T> {
-    value.context("xpm-aur setup failed")
-}

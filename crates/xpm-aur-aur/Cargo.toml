@@ -14,4 +14,3 @@ serde_json.workspace = true
 thiserror.workspace = true
 ureq = { version = "2.12", features = ["json"] }
 urlencoding = "2"
-tracing.workspace = true
