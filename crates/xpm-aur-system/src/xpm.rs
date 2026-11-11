@@ -68,7 +68,10 @@ impl XpmClient {
         }
     }
 
-    /// Ask sudo for credentials once, so parallel builds do not each prompt.
+    /// Best-effort sudo credential pre-warm before parallel builds.
+    ///
+    /// Uses `sudo -n -v` so scripts without a TTY never block on a password
+    /// prompt. The real transactions still ask for credentials if needed.
     pub fn authenticate(&self) -> Result<(), XpmError> {
         if is_effective_root() {
             return Ok(());
@@ -76,16 +79,11 @@ impl XpmClient {
         let Some(sudo) = &self.sudo else {
             return Ok(());
         };
-        let spec = CommandSpec::new(sudo).arg("-v").stdio(StdioMode::Inherit);
-        let output = self.runner.run(&spec)?;
-        if output.success {
-            Ok(())
-        } else {
-            Err(XpmError::Failed {
-                command: format!("{sudo} -v"),
-                code: output.code,
-            })
-        }
+        let spec = CommandSpec::new(sudo)
+            .args(["-n", "-v"])
+            .stdio(StdioMode::Capture);
+        let _ = self.runner.run(&spec);
+        Ok(())
     }
 
     pub fn sync(&self) -> Result<(), XpmError> {
