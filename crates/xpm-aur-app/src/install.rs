@@ -304,6 +304,12 @@ impl App {
                     .collect::<Vec<_>>()
                     .join(", ");
                 println!("  {packages}");
+                if !build.depends_on.is_empty() {
+                    println!("    after: {}", build.depends_on.join(", "));
+                }
+                if !build.build_deps.is_empty() {
+                    println!("    chroot deps: {}", build.build_deps.join(", "));
+                }
             }
         }
     }
