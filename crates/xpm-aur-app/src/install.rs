@@ -140,7 +140,7 @@ impl App {
             .map(|action| action.name.clone())
             .collect();
         xpm.install_official(&official_deps, true, options.needed)?;
-        xpm.install_official(&official_explicit, false, options.needed)?;
+        xpm.install_official_explicit(&official_explicit, options.needed)?;
 
         let aur_bases = plan.aur.len();
         let aur_packages = plan.aur.iter().map(|build| build.packages.len()).sum();
@@ -205,7 +205,9 @@ impl App {
         // explicit package's dependency check can see them.
         progress.print(&build.base, 2, 3, "installing");
         xpm.install_files(&dependency_files, true)?;
-        xpm.install_files(&explicit_files, false)?;
+        // Promote packages that the user requested (or that were previously
+        // installed as dependencies) to explicit in xpm's database.
+        xpm.install_files_explicit(&explicit_files)?;
 
         let version = build
             .packages
