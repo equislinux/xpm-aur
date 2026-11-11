@@ -9,6 +9,10 @@ use crate::version::Evr;
 pub struct OfficialAction {
     pub name: String,
     pub asdeps: bool,
+    /// Requested only as a make/check dependency of an AUR build. In chroot
+    /// mode it is installed inside the disposable root instead of the host.
+    #[serde(default)]
+    pub build_only: bool,
 }
 
 /// One split package produced by an AUR package base.
@@ -28,6 +32,9 @@ pub struct AurBuild {
     /// Other AUR bases whose artifacts must be built and installed first.
     #[serde(default)]
     pub depends_on: Vec<String>,
+    /// Official packages this base needs inside its clean chroot.
+    #[serde(default)]
+    pub build_deps: Vec<String>,
 }
 
 /// A package that must be removed before the transaction.

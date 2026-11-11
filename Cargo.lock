@@ -1195,6 +1195,7 @@ dependencies = [
  "xpm-aur-build",
  "xpm-aur-core",
  "xpm-aur-system",
+ "xpm-progress",
 ]
 
 [[package]]
@@ -1260,6 +1261,14 @@ dependencies = [
  "xpm-aur-core",
  "xz2",
  "zstd",
+]
+
+[[package]]
+name = "xpm-progress"
+version = "0.1.0"
+source = "git+https://github.com/equislinux/xpm?rev=a3d62e3dd5029295805cf4c56962c30521084c57#a3d62e3dd5029295805cf4c56962c30521084c57"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

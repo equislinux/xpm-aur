@@ -15,13 +15,13 @@ forms before clap parses them.
 | `-Rns pkg` | `remove --nosave --recursive pkg` | |
 | `-Q` / `-Qq` | `query` / `query --quiet` | tracked AUR packages |
 | `-Qm` | `query --foreign` | all foreign installed packages |
-| `-Sc` / `-Scc` | `clean` / `clean --all` | cache only |
+| `-Sc` / `-Scc` | `clean` / `clean --all` | cache; `--all` also removes the chroot base |
 | `-G` / `-Gp` | `getpkgbuild` / `getpkgbuild --print` | clone/update AUR PKGBUILD |
 | `-V` | `--version` | |
 
 Supported long options: `--noconfirm`, `--needed`, `--asdeps`, `--devel`, `--nocheck`,
 `--aur`, `--repo`, `--rebuild`, `--print`, `--remove-conflicts`, `--config`,
-`--build-dir`, `--cache-dir`, `--state`.
+`--build-dir`, `--cache-dir`, `--chroot-dir`, `--state`.
 
 Not implemented: `-F` (files DB), `-Sw` (download only), `-Sc` package cache
 signatures, `--answerclean`, `--editmenu`, `--diffmenu`, `--sudoloop`, and other

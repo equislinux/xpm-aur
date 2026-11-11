@@ -91,6 +91,10 @@ struct Cli {
     #[arg(long = "cache-dir", global = true)]
     cache_dir: Option<PathBuf>,
 
+    /// Override the shared chroot template base directory.
+    #[arg(long = "chroot-dir", global = true, value_name = "PATH")]
+    chroot_dir: Option<PathBuf>,
+
     /// Override the state file.
     #[arg(long, global = true)]
     state: Option<PathBuf>,
@@ -183,11 +187,15 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     let git = AurGit::new(config.git_url.clone(), runner.clone());
 
     let run_checks = config.run_checks && !cli.nocheck;
+    let use_chroot = config.chroot && !cli.no_chroot;
     let mut build_config = BuildConfig::new(paths.package_root.clone());
     build_config.program = config.xpm.clone();
     build_config.srcdest = Some(paths.sources_root.clone());
     build_config.run_checks = run_checks;
-    build_config.chroot = config.chroot && !cli.no_chroot;
+    build_config.chroot = use_chroot;
+    build_config.chroot_dir = Some(paths.chroot_root.clone());
+    build_config.sudo = config.sudo.clone();
+    build_config.nodeps = true;
     build_config.extra_args = config.extra_args.clone();
     let builder = XpmBuilder::new(runner, build_config);
     let state = StateStore::at(state_path);
@@ -207,8 +215,16 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         include_check_depends: run_checks,
         print_only: cli.print,
         target_asdeps: cli.asdeps,
+        chroot: use_chroot,
         jobs,
     };
+
+    let builds = matches!(&cli.command, Command::Install { .. } | Command::Upgrade);
+    if builds && is_effective_root() && !use_chroot {
+        anyhow::bail!(
+            "xpm-aur must run as a normal user when chroot builds are disabled;              drop privileges or remove --no-chroot"
+        );
+    }
 
     match cli.command {
         Command::Search { query, by } => {
@@ -412,7 +428,20 @@ fn resolve_paths(config: &Config, cli: &Cli) -> AppPaths {
     if let Some(build) = &cli.build_dir {
         paths.build_root = build.clone();
     }
+    if let Some(chroot) = &config.paths.chroot {
+        paths.chroot_root = expand_path(chroot);
+    }
+    if let Some(chroot) = &cli.chroot_dir {
+        paths.chroot_root = chroot.clone();
+    }
     paths
+}
+
+fn is_effective_root() -> bool {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata("/proc/self")
+        .map(|metadata| metadata.uid() == 0)
+        .unwrap_or(false)
 }
 
 fn parse_by(value: &str) -> Result<SearchBy, String> {

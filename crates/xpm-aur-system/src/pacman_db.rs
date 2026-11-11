@@ -147,49 +147,28 @@ impl PacmanDatabase {
 
     /// Load all installed packages. There is no cache because xpm transactions
     /// can change this database between commands.
+    ///
+    /// Both databases are merged so mixed pacman/xpm systems keep working. For
+    /// the same name the newest version wins; on a tie the xpm record is
+    /// authoritative because xpm owns its transactions.
     pub fn installed(&self) -> Result<Vec<Candidate>, DbError> {
-        let xpm_local = self.xpm_local_path();
-        if contains_package_dirs(&xpm_local) {
-            return installed_from_xpm(&xpm_local);
+        let mut packages: std::collections::BTreeMap<String, Candidate> =
+            std::collections::BTreeMap::new();
+
+        for candidate in installed_from_pacman(&self.local_path())? {
+            packages.insert(candidate.meta.name.clone(), candidate);
+        }
+        for candidate in installed_from_xpm(&self.xpm_local_path())? {
+            let replace = packages
+                .get(&candidate.meta.name)
+                .map(|existing| existing.meta.version <= candidate.meta.version)
+                .unwrap_or(true);
+            if replace {
+                packages.insert(candidate.meta.name.clone(), candidate);
+            }
         }
 
-        let local = self.local_path();
-        let entries = match std::fs::read_dir(&local) {
-            Ok(entries) => entries,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(source) => {
-                return Err(DbError::Io {
-                    path: local.display().to_string(),
-                    source,
-                });
-            }
-        };
-
-        let mut packages = Vec::new();
-        for entry in entries {
-            let entry = entry.map_err(|source| DbError::Io {
-                path: local.display().to_string(),
-                source,
-            })?;
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let desc_path = path.join("desc");
-            if !desc_path.is_file() {
-                continue;
-            }
-            let desc = parse_desc(&desc_path)?;
-            let mut candidate = candidate_from_desc(&desc, &desc_path, CandidateSource::Installed)?;
-            candidate.reason = Some(match desc_first(&desc, "REASON").unwrap_or("0") {
-                "1" => InstallReason::Dependency,
-                _ => InstallReason::Explicit,
-            });
-            packages.push(candidate);
-        }
-
-        packages.sort_by(|a, b| a.meta.name.cmp(&b.meta.name));
-        Ok(packages)
+        Ok(packages.into_values().collect())
     }
 
     /// All sync candidates, loaded once per process.
@@ -324,6 +303,50 @@ impl PacmanDatabase {
     }
 }
 
+fn installed_from_pacman(local: &Path) -> Result<Vec<Candidate>, DbError> {
+    let entries = match std::fs::read_dir(local) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(source) => {
+            return Err(DbError::Io {
+                path: local.display().to_string(),
+                source,
+            });
+        }
+    };
+
+    let mut packages: std::collections::BTreeMap<String, Candidate> =
+        std::collections::BTreeMap::new();
+    for entry in entries {
+        let entry = entry.map_err(|source| DbError::Io {
+            path: local.display().to_string(),
+            source,
+        })?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let desc_path = path.join("desc");
+        if !desc_path.is_file() {
+            continue;
+        }
+        let desc = parse_desc(&desc_path)?;
+        let mut candidate = candidate_from_desc(&desc, &desc_path, CandidateSource::Installed)?;
+        candidate.reason = Some(match desc_first(&desc, "REASON").unwrap_or("0") {
+            "1" => InstallReason::Dependency,
+            _ => InstallReason::Explicit,
+        });
+        let replace = packages
+            .get(&candidate.meta.name)
+            .map(|existing| existing.meta.version <= candidate.meta.version)
+            .unwrap_or(true);
+        if replace {
+            packages.insert(candidate.meta.name.clone(), candidate);
+        }
+    }
+    Ok(packages.into_values().collect())
+}
+
 fn installed_from_xpm(local: &Path) -> Result<Vec<Candidate>, DbError> {
     let entries = match std::fs::read_dir(local) {
         Ok(entries) => entries,
@@ -420,12 +443,6 @@ fn read_dependency_file(path: &Path) -> Result<Vec<Dependency>, DbError> {
             })
         })
         .collect()
-}
-
-fn contains_package_dirs(path: &Path) -> bool {
-    std::fs::read_dir(path)
-        .map(|entries| entries.flatten().any(|entry| entry.path().is_dir()))
-        .unwrap_or(false)
 }
 
 fn collect_repo_order(
@@ -833,7 +850,7 @@ mod tests {
     }
 
     #[test]
-    fn prefers_xpm_local_database_and_parses_its_format() {
+    fn merges_xpm_and_pacman_local_databases() {
         let root = temp_root();
         write_pacman_entry(&root, "pacman-only", "1.0-1");
         write_xpm_entry(
@@ -850,24 +867,50 @@ mod tests {
 
         let db = PacmanDatabase::new(&root);
         let installed = db.installed().unwrap();
-        assert_eq!(installed.len(), 1);
-        assert_eq!(installed[0].meta.name, "foo");
-        assert_eq!(installed[0].meta.version.to_string(), "2.0-1");
-        assert_eq!(installed[0].reason, Some(InstallReason::Dependency));
+        assert_eq!(installed.len(), 2);
+        let foo = installed
+            .iter()
+            .find(|candidate| candidate.meta.name == "foo")
+            .unwrap();
+        assert_eq!(foo.meta.version.to_string(), "2.0-1");
+        assert_eq!(foo.reason, Some(InstallReason::Dependency));
         assert!(
-            installed[0]
-                .meta
+            foo.meta
                 .depends
                 .iter()
                 .any(|dependency| dependency.name == "glibc")
         );
         assert!(
-            installed[0]
-                .meta
+            foo.meta
                 .provides
                 .iter()
                 .any(|dependency| dependency.name == "foo-virtual")
         );
+        assert!(
+            installed
+                .iter()
+                .any(|candidate| candidate.meta.name == "pacman-only")
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn newest_version_wins_when_both_databases_have_a_package() {
+        let root = temp_root();
+        write_pacman_entry(&root, "foo", "1.0-1");
+        write_xpm_entry(
+            &root.join("var/lib/xpm"),
+            "foo",
+            &[("version", "2.0-1\n"), ("reason", "explicit\n")],
+        );
+        let db = PacmanDatabase::new(&root);
+        let installed = db.installed().unwrap();
+        assert_eq!(installed.len(), 1);
+        assert_eq!(installed[0].meta.version.to_string(), "2.0-1");
+
+        write_pacman_entry(&root, "foo", "3.0-1");
+        let installed = db.installed().unwrap();
+        assert_eq!(installed[0].meta.version.to_string(), "3.0-1");
         std::fs::remove_dir_all(root).unwrap();
     }
 

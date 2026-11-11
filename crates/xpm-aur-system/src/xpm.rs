@@ -55,6 +55,39 @@ impl XpmClient {
         )
     }
 
+    /// Clone this client with a different internal confirmation policy.
+    ///
+    /// xpm-aur confirms the whole plan once; internal transactions must never
+    /// prompt a second time.
+    pub fn with_no_confirm(&self, no_confirm: bool) -> Self {
+        Self {
+            runner: self.runner.clone(),
+            program: self.program.clone(),
+            sudo: self.sudo.clone(),
+            no_confirm,
+        }
+    }
+
+    /// Ask sudo for credentials once, so parallel builds do not each prompt.
+    pub fn authenticate(&self) -> Result<(), XpmError> {
+        if is_effective_root() {
+            return Ok(());
+        }
+        let Some(sudo) = &self.sudo else {
+            return Ok(());
+        };
+        let spec = CommandSpec::new(sudo).arg("-v").stdio(StdioMode::Inherit);
+        let output = self.runner.run(&spec)?;
+        if output.success {
+            Ok(())
+        } else {
+            Err(XpmError::Failed {
+                command: format!("{sudo} -v"),
+                code: output.code,
+            })
+        }
+    }
+
     pub fn sync(&self) -> Result<(), XpmError> {
         self.run(["sync"], &[], &[])?;
         Ok(())

@@ -60,13 +60,16 @@ two sources of truth.
 xpm sync
   → resolve plan
   → remove conflicts/replacements (optional)
-  → xpm install official dependencies
+  → xpm install runtime official dependencies (make/check-only deps stay
+    inside the chroot)
   → xpm install official explicit targets
   → scheduler over AUR bases:
        build ready bases concurrently (up to the job limit):
          git checkout
          validate .SRCINFO
-         xpm build (makepkg --nodeps --cleanbuild)
+         xpm build (shared base-devel template; xpm installs the base's
+         official and prebuilt AUR dependencies in the disposable root,
+         then makepkg --nodeps --cleanbuild)
        as each build finishes, on the calling thread:
          xpm install split dependencies
          xpm install split explicit packages

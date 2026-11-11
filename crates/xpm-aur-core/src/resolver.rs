@@ -26,6 +26,9 @@ pub struct ResolveOptions {
     pub remove_conflicts: bool,
     /// Mark requested targets as dependencies (`--asdeps`).
     pub target_asdeps: bool,
+    /// Plan for a clean chroot: an installed foreign build dependency must be
+    /// rebuilt so its artifact can be installed in the disposable root.
+    pub chroot: bool,
 }
 
 impl Default for ResolveOptions {
@@ -38,6 +41,7 @@ impl Default for ResolveOptions {
             rebuild: false,
             remove_conflicts: false,
             target_asdeps: false,
+            chroot: false,
         }
     }
 }
@@ -48,6 +52,11 @@ struct Request {
     asdeps: bool,
     explicit: bool,
     required_by: String,
+    /// True for make/check dependencies only; they never need a host install
+    /// when the build happens inside a chroot.
+    build_only: bool,
+    /// AUR base whose clean chroot needs this dependency.
+    for_base: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -61,6 +70,7 @@ struct AurNode {
 struct OfficialNode {
     candidate: Candidate,
     asdeps: bool,
+    build_only: bool,
 }
 
 /// Resolves package names into an [`InstallPlan`].
@@ -88,6 +98,7 @@ impl<'a> Resolver<'a> {
             official: BTreeMap::new(),
             aur: BTreeMap::new(),
             removals: BTreeMap::new(),
+            base_official_deps: BTreeMap::new(),
             queue: VecDeque::new(),
             seen: HashSet::new(),
         };
@@ -99,6 +110,8 @@ impl<'a> Resolver<'a> {
                 asdeps: self.options.target_asdeps,
                 explicit: true,
                 required_by: "user".to_string(),
+                build_only: false,
+                for_base: None,
             });
         }
 
@@ -107,7 +120,7 @@ impl<'a> Resolver<'a> {
         }
 
         self.check_conflicts(&mut state)?;
-        let aur = build_aur_plan(&state.aur)?;
+        let aur = build_aur_plan(&state.aur, &state.base_official_deps)?;
 
         Ok(InstallPlan {
             official: state
@@ -116,6 +129,7 @@ impl<'a> Resolver<'a> {
                 .map(|(name, node)| OfficialAction {
                     name: name.clone(),
                     asdeps: node.asdeps,
+                    build_only: node.build_only,
                 })
                 .collect(),
             aur,
@@ -128,21 +142,59 @@ impl<'a> Resolver<'a> {
     }
 
     fn process_request(&self, state: &mut State, request: Request) -> CoreResult<()> {
-        let key = request.dependency.to_string();
+        let key = format!(
+            "{}|{}|{}",
+            request.dependency,
+            request.for_base.as_deref().unwrap_or(""),
+            request.build_only
+        );
 
         // A dependency already satisfied by the installed system does not need
-        // a reinstall. Explicit user targets still look for an upgrade below.
+        // a host reinstall. Its name still goes into the base's chroot list
+        // when it comes from an official repository. In chroot mode a foreign
+        // build dependency must be rebuilt so its artifact is available.
         if !request.explicit && state.installed_satisfies(&request.dependency) {
-            return Ok(());
+            let installed = state
+                .installed_satisfying(&request.dependency)
+                .map(|candidate| candidate.meta.name.clone());
+            let mut force_chroot_build = false;
+            if let Some(name) = installed {
+                if let Some(base) = &request.for_base {
+                    if self.catalog.is_official_package(&name)? {
+                        state.record_base_dep(base, name);
+                    } else if self.options.chroot {
+                        force_chroot_build = true;
+                    }
+                }
+            }
+            if !force_chroot_build {
+                return Ok(());
+            }
         }
+
         if state.planned_satisfies(&request.dependency) {
+            if let Some(base) = &request.for_base {
+                let planned = state
+                    .planned_satisfying(&request.dependency)
+                    .map(|candidate| {
+                        (
+                            candidate.meta.name.clone(),
+                            matches!(candidate.source, CandidateSource::Official { .. }),
+                        )
+                    });
+                if let Some((name, official)) = planned {
+                    if official {
+                        state.record_base_dep(base, name);
+                    }
+                }
+            }
             state.mark_explicit(&request.dependency, request.explicit && !request.asdeps);
             return Ok(());
         }
 
         // Avoid asking the catalog the same unresolved question repeatedly in
         // a cyclic graph. Cycles are handled again at the build-base level.
-        if !state.seen.insert(key.clone()) {
+        if !state.seen.insert(key) {
             return Ok(());
         }
 
@@ -162,16 +214,23 @@ impl<'a> Resolver<'a> {
             let newer = candidate.meta.version > installed.meta.version;
             let same = candidate.meta.version == installed.meta.version;
             if !newer && !self.options.rebuild {
-                // Already installed at the same or a newer version.
-                return Ok(());
-            }
-            if same && !self.options.rebuild {
-                return Ok(());
+                // A foreign build dependency still needs an artifact for the
+                // clean chroot even when the host already has that version.
+                let rebuild_for_chroot = request.for_base.is_some()
+                    && self.options.chroot
+                    && same
+                    && matches!(candidate.source, CandidateSource::Aur);
+                if !rebuild_for_chroot {
+                    return Ok(());
+                }
             }
         }
 
         match &candidate.source {
             CandidateSource::Official { .. } => {
+                if let Some(base) = &request.for_base {
+                    state.record_base_dep(base, candidate.meta.name.clone());
+                }
                 state
                     .official
                     .entry(candidate.meta.name.clone())
@@ -179,10 +238,14 @@ impl<'a> Resolver<'a> {
                         if request.explicit && !request.asdeps {
                             node.asdeps = false;
                         }
+                        if !request.build_only {
+                            node.build_only = false;
+                        }
                     })
                     .or_insert_with(|| OfficialNode {
                         candidate: candidate.clone(),
                         asdeps: request.asdeps,
+                        build_only: request.build_only,
                     });
             }
             CandidateSource::Aur => {
@@ -217,20 +280,42 @@ impl<'a> Resolver<'a> {
     }
 
     fn enqueue_aur_dependencies(&self, state: &mut State, candidate: &Candidate, base: &str) {
-        let mut dependencies = candidate.meta.depends.clone();
+        let mut requests: Vec<(Dependency, bool)> = candidate
+            .meta
+            .depends
+            .iter()
+            .cloned()
+            .map(|dependency| (dependency, false))
+            .collect();
         if self.options.include_make_depends {
-            dependencies.extend(candidate.meta.make_depends.clone());
+            requests.extend(
+                candidate
+                    .meta
+                    .make_depends
+                    .iter()
+                    .cloned()
+                    .map(|dependency| (dependency, true)),
+            );
         }
         if self.options.include_check_depends {
-            dependencies.extend(candidate.meta.check_depends.clone());
+            requests.extend(
+                candidate
+                    .meta
+                    .check_depends
+                    .iter()
+                    .cloned()
+                    .map(|dependency| (dependency, true)),
+            );
         }
 
-        for dependency in dependencies {
+        for (dependency, build_only) in requests {
             state.queue.push_back(Request {
                 dependency,
                 asdeps: true,
                 explicit: false,
                 required_by: base.to_string(),
+                build_only,
+                for_base: Some(base.to_string()),
             });
         }
     }
@@ -329,11 +414,20 @@ struct State {
     official: BTreeMap<String, OfficialNode>,
     aur: BTreeMap<String, AurNode>,
     removals: BTreeMap<String, String>,
+    /// Official package names needed inside each AUR base's clean chroot.
+    base_official_deps: BTreeMap<String, BTreeSet<String>>,
     queue: VecDeque<Request>,
     seen: HashSet<String>,
 }
 
 impl State {
+    fn record_base_dep(&mut self, base: &str, name: String) {
+        self.base_official_deps
+            .entry(base.to_string())
+            .or_default()
+            .insert(name);
+    }
+
     fn installed_named(&self, name: &str) -> Option<&Candidate> {
         self.installed
             .iter()
@@ -415,7 +509,10 @@ fn choose_best(mut candidates: Vec<Candidate>, dependency: &Dependency) -> Optio
 }
 
 /// Group AUR nodes by package base and topologically sort the bases.
-fn build_aur_plan(nodes: &BTreeMap<String, AurNode>) -> CoreResult<Vec<AurBuild>> {
+fn build_aur_plan(
+    nodes: &BTreeMap<String, AurNode>,
+    base_official_deps: &BTreeMap<String, BTreeSet<String>>,
+) -> CoreResult<Vec<AurBuild>> {
     if nodes.is_empty() {
         return Ok(Vec::new());
     }
@@ -513,6 +610,10 @@ fn build_aur_plan(nodes: &BTreeMap<String, AurNode>) -> CoreResult<Vec<AurBuild>
                     .unwrap_or_default()
                     .into_iter()
                     .collect(),
+                build_deps: base_official_deps
+                    .get(&base)
+                    .map(|deps| deps.iter().cloned().collect())
+                    .unwrap_or_default(),
                 base,
                 packages,
             }
@@ -673,6 +774,77 @@ mod tests {
             .map(|build| build.base.as_str())
             .collect();
         assert_eq!(first_level, vec!["lib", "tool"]);
+    }
+
+    #[test]
+    fn official_build_dependencies_are_marked_and_scoped_to_the_base() {
+        let mut app = meta("app", "1.0-1");
+        app.base = "app".into();
+        app.depends = vec![dep("libc")];
+        app.make_depends = vec![dep("makedep")];
+
+        let catalog = FakeCatalog::new()
+            .official("libc", "1.0-1")
+            .official("makedep", "1.0-1")
+            .aur_meta(app);
+        let plan = resolve(&catalog, &["app"]).unwrap();
+
+        let by_name = |name: &str| {
+            plan.official
+                .iter()
+                .find(|action| action.name == name)
+                .unwrap()
+        };
+        assert!(!by_name("libc").build_only);
+        assert!(by_name("makedep").build_only);
+
+        let app = plan.aur.iter().find(|build| build.base == "app").unwrap();
+        assert_eq!(
+            app.build_deps,
+            vec!["libc".to_string(), "makedep".to_string()]
+        );
+    }
+
+    #[test]
+    fn installed_official_dependency_is_still_added_to_the_chroot() {
+        let mut app = meta("app", "1.0-1");
+        app.base = "app".into();
+        app.depends = vec![dep("libc")];
+
+        let catalog = FakeCatalog::new()
+            .installed("libc", "1.0-1", InstallReason::Dependency)
+            .official("libc", "1.0-1")
+            .aur_meta(app);
+        let plan = resolve(&catalog, &["app"]).unwrap();
+
+        assert!(plan.official.is_empty());
+        let app = plan.aur.iter().find(|build| build.base == "app").unwrap();
+        assert_eq!(app.build_deps, vec!["libc".to_string()]);
+    }
+
+    #[test]
+    fn chroot_mode_rebuilds_installed_foreign_build_dependencies() {
+        let mut app = meta("app", "1.0-1");
+        app.base = "app".into();
+        app.make_depends = vec![dep("tool")];
+
+        let catalog = FakeCatalog::new()
+            .installed("tool", "1.0-1", InstallReason::Explicit)
+            .aur_meta(meta("tool", "1.0-1"))
+            .aur_meta(app);
+
+        let plan = resolve(&catalog, &["app"]).unwrap();
+        assert_eq!(plan.aur.len(), 1, "host-installed tool needs no rebuild");
+
+        let options = ResolveOptions {
+            chroot: true,
+            ..ResolveOptions::default()
+        };
+        let plan = Resolver::new(&catalog, options)
+            .resolve(&["app".to_string()])
+            .unwrap();
+        assert_eq!(plan.aur.len(), 2, "tool must be rebuilt for the chroot");
+        assert!(plan.aur.iter().any(|build| build.base == "tool"));
     }
 
     #[test]

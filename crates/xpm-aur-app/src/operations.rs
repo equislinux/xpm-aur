@@ -14,8 +14,6 @@ use crate::app::App;
 use crate::error::{AppError, AppResult};
 use crate::install::{InstallOptions, InstallOutcome};
 
-const DEFAULT_CHROOT_BASE: &str = "/var/lib/archbuild/xpm-aur";
-
 #[derive(Clone, Debug, Default)]
 pub struct RemoveOptions {
     pub recursive: bool,
@@ -252,7 +250,7 @@ impl App {
     /// whole cache, including the shared chroot base; otherwise keep entries
     /// newer than `keep_days`.
     pub fn clean(&self, all: bool, keep_days: u64) -> AppResult<usize> {
-        self.clean_with_chroot_base(all, keep_days, Path::new(DEFAULT_CHROOT_BASE))
+        self.clean_with_chroot_base(all, keep_days, &self.paths.chroot_root)
     }
 
     fn clean_with_chroot_base(
@@ -445,6 +443,7 @@ mod tests {
             package_root: cache.join("packages"),
             sources_root: cache.join("sources"),
             cache_root: cache.to_path_buf(),
+            chroot_root: cache.join("chroot-base"),
         };
         App::new(
             catalog,

@@ -27,6 +27,8 @@ pub struct InstallOptions {
     pub include_check_depends: bool,
     pub print_only: bool,
     pub target_asdeps: bool,
+    /// Build AUR packages inside a clean chroot.
+    pub chroot: bool,
     /// Maximum number of AUR package bases built concurrently.
     pub jobs: usize,
 }
@@ -42,6 +44,7 @@ impl Default for InstallOptions {
             include_check_depends: true,
             print_only: false,
             target_asdeps: false,
+            chroot: false,
             jobs: default_jobs(),
         }
     }
@@ -67,9 +70,13 @@ impl App {
             return Ok(InstallOutcome::default());
         }
 
+        let transaction = crate::progress::PhaseProgress::new(["sync", "resolve", "build"]);
+        transaction.print("sync", 0, 3, "official databases");
+
         // Refresh official databases through xpm before reading them. This is
         // the only safe way to avoid resolving against a stale sync DB.
         self.xpm.sync()?;
+        transaction.print("resolve", 1, 3, "dependency plan");
 
         let resolver = Resolver::new(
             &self.catalog,
@@ -81,6 +88,7 @@ impl App {
                 rebuild: options.rebuild,
                 remove_conflicts: options.remove_conflicts,
                 target_asdeps: options.target_asdeps,
+                chroot: options.chroot,
             },
         );
         let plan = resolver.resolve(targets)?;
@@ -104,15 +112,25 @@ impl App {
 
         crate::app::confirm("Proceed with the transaction?", self.no_confirm)?;
 
-        if !plan.removals.is_empty() {
-            let names: Vec<String> = plan.removals.iter().map(|item| item.name.clone()).collect();
-            self.xpm.remove(&names, false, false)?;
+        // The user already approved this plan; never ask again inside xpm.
+        let xpm = self.xpm.with_no_confirm(true);
+        if options.chroot {
+            // Authenticate sudo once before several parallel builds start.
+            xpm.authenticate()?;
         }
 
+        if !plan.removals.is_empty() {
+            let names: Vec<String> = plan.removals.iter().map(|item| item.name.clone()).collect();
+            xpm.remove(&names, false, false)?;
+        }
+
+        // In chroot mode make/check-only official dependencies are installed
+        // inside each disposable root by xpm build, not on the host.
+        let include_build_only = !options.chroot;
         let official_deps: Vec<String> = plan
             .official
             .iter()
-            .filter(|action| action.asdeps)
+            .filter(|action| action.asdeps && (include_build_only || !action.build_only))
             .map(|action| action.name.clone())
             .collect();
         let official_explicit: Vec<String> = plan
@@ -121,20 +139,19 @@ impl App {
             .filter(|action| !action.asdeps)
             .map(|action| action.name.clone())
             .collect();
-        self.xpm
-            .install_official(&official_deps, true, options.needed)?;
-        self.xpm
-            .install_official(&official_explicit, false, options.needed)?;
+        xpm.install_official(&official_deps, true, options.needed)?;
+        xpm.install_official(&official_explicit, false, options.needed)?;
 
         let aur_bases = plan.aur.len();
         let aur_packages = plan.aur.iter().map(|build| build.packages.len()).sum();
+        transaction.print("build", 2, 3, "AUR package bases");
         let progress =
             crate::progress::PhaseProgress::new(plan.aur.iter().map(|build| build.base.as_str()));
         scheduler::run(
             &plan.aur,
             options.jobs,
             |build, preinstall| self.build_base(build, preinstall, &progress),
-            |build, built| self.install_base(build, built, &progress),
+            |build, built| self.install_base(&xpm, build, built, &progress),
         )?;
 
         Ok(InstallOutcome {
@@ -168,13 +185,16 @@ impl App {
         }
 
         progress.print(&build.base, 1, 3, "building");
-        let artifacts = self.builder.build(&checkout, &build.base, preinstall)?;
+        let artifacts =
+            self.builder
+                .build(&checkout, &build.base, preinstall, &build.build_deps)?;
         Ok(BuiltBase { commit, artifacts })
     }
 
     /// Install one finished base and update the sidecar. Always runs serially.
     fn install_base(
         &self,
+        xpm: &xpm_aur_system::XpmClient,
         build: &AurBuild,
         built: &BuiltBase,
         progress: &crate::progress::PhaseProgress,
@@ -184,8 +204,8 @@ impl App {
         // Install split dependencies before explicit split packages so the
         // explicit package's dependency check can see them.
         progress.print(&build.base, 2, 3, "installing");
-        self.xpm.install_files(&dependency_files, true)?;
-        self.xpm.install_files(&explicit_files, false)?;
+        xpm.install_files(&dependency_files, true)?;
+        xpm.install_files(&explicit_files, false)?;
 
         let version = build
             .packages
@@ -256,7 +276,11 @@ impl App {
             println!("Official:");
             for action in &plan.official {
                 let reason = if action.asdeps {
-                    "dependency"
+                    if action.build_only {
+                        "build dependency"
+                    } else {
+                        "dependency"
+                    }
                 } else {
                     "explicit"
                 };
