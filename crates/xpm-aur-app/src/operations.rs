@@ -14,6 +14,8 @@ use crate::app::App;
 use crate::error::{AppError, AppResult};
 use crate::install::{InstallOptions, InstallOutcome};
 
+const DEFAULT_CHROOT_BASE: &str = "/var/lib/archbuild/xpm-aur";
+
 #[derive(Clone, Debug, Default)]
 pub struct RemoveOptions {
     pub recursive: bool,
@@ -39,6 +41,7 @@ impl App {
     /// Installed packages that are not present in any official sync database.
     /// This is the pacman `-Qm` view, including packages installed by yay.
     pub fn query_foreign(&self) -> AppResult<Vec<Candidate>> {
+        self.ensure_sync_database()?;
         let official = self.catalog.official_names()?;
         let mut installed = self.catalog.installed()?;
         installed.retain(|candidate| !official.contains(&candidate.meta.name));
@@ -187,6 +190,7 @@ impl App {
     /// Adopt AUR packages that were installed by another helper (usually yay)
     /// into the sidecar so future upgrades are aware of them.
     pub fn adopt(&self) -> AppResult<usize> {
+        self.ensure_sync_database()?;
         let installed = self.catalog.installed()?;
         let official: HashSet<String> = self
             .catalog
@@ -245,8 +249,18 @@ impl App {
     }
 
     /// Remove cached build trees and package artifacts. With `all`, remove the
-    /// whole cache; otherwise keep entries newer than `keep_days`.
+    /// whole cache, including the shared chroot base; otherwise keep entries
+    /// newer than `keep_days`.
     pub fn clean(&self, all: bool, keep_days: u64) -> AppResult<usize> {
+        self.clean_with_chroot_base(all, keep_days, Path::new(DEFAULT_CHROOT_BASE))
+    }
+
+    fn clean_with_chroot_base(
+        &self,
+        all: bool,
+        keep_days: u64,
+        chroot_base: &Path,
+    ) -> AppResult<usize> {
         let mut removed = 0;
         for path in [
             &self.paths.build_root,
@@ -261,7 +275,19 @@ impl App {
                 removed += remove_old_entries(path, keep_days)?;
             }
         }
+        if all && chroot_base.exists() {
+            self.xpm.remove_paths(&[chroot_base.to_path_buf()])?;
+            removed += 1;
+        }
         Ok(removed)
+    }
+
+    fn ensure_sync_database(&self) -> AppResult<()> {
+        if self.catalog.database().has_sync() {
+            Ok(())
+        } else {
+            Err(AppError::NoSyncDatabase)
+        }
     }
 
     fn reconcile_state(&self) -> AppResult<()> {
@@ -346,4 +372,148 @@ fn remove_old_entries(path: &Path, keep_days: u64) -> AppResult<usize> {
         }
     }
     Ok(removed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    use xpm_aur_aur::{AurGit, AurRpc};
+    use xpm_aur_build::{BuildConfig, XpmBuilder};
+    use xpm_aur_core::process::{CommandOutput, CommandRunner, CommandSpec, ProcessError};
+    use xpm_aur_system::{PacmanDatabase, StateStore, SystemCatalog, XpmClient};
+
+    use crate::app::AppPaths;
+
+    #[derive(Default)]
+    struct RecordingRunner {
+        calls: Mutex<Vec<CommandSpec>>,
+    }
+
+    impl CommandRunner for RecordingRunner {
+        fn run(&self, spec: &CommandSpec) -> Result<CommandOutput, ProcessError> {
+            self.calls.lock().unwrap().push(spec.clone());
+            Ok(CommandOutput {
+                success: true,
+                code: Some(0),
+                stdout: String::new(),
+                stderr: String::new(),
+            })
+        }
+    }
+
+    struct TempDir {
+        path: PathBuf,
+    }
+
+    impl TempDir {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "xpm-aur-operations-test-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn make_app(root: &Path, cache: &Path, runner: Arc<RecordingRunner>) -> App {
+        let catalog = SystemCatalog::new(
+            PacmanDatabase::new(root),
+            AurRpc::new(Some("http://127.0.0.1:1".into())),
+        );
+        let xpm = XpmClient::new(runner.clone(), "xpm", Some("sudo".into()), true);
+        let git = AurGit::new("https://invalid.invalid", runner.clone());
+        let builder = XpmBuilder::new(runner, BuildConfig::new(cache.join("packages")));
+        let paths = AppPaths {
+            build_root: cache.join("build"),
+            package_root: cache.join("packages"),
+            sources_root: cache.join("sources"),
+            cache_root: cache.to_path_buf(),
+        };
+        App::new(
+            catalog,
+            xpm,
+            git,
+            builder,
+            StateStore::at(cache.join("state.json")),
+            paths,
+            true,
+        )
+    }
+
+    fn write_installed(root: &Path, name: &str) {
+        let dir = root.join("var/lib/xpm/local").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("version"), "1.0-1\n").unwrap();
+    }
+
+    #[test]
+    fn foreign_queries_require_a_sync_database() {
+        let root = TempDir::new();
+        let cache = TempDir::new();
+        write_installed(root.path(), "aur-only");
+        let runner = Arc::new(RecordingRunner::default());
+        let app = make_app(root.path(), cache.path(), runner);
+
+        assert!(matches!(app.query_foreign(), Err(AppError::NoSyncDatabase)));
+        assert!(matches!(app.adopt(), Err(AppError::NoSyncDatabase)));
+    }
+
+    #[test]
+    fn clean_all_removes_the_shared_chroot_base() {
+        let root = TempDir::new();
+        let cache = TempDir::new();
+        for dir in ["build", "packages", "sources"] {
+            std::fs::create_dir_all(cache.path().join(dir)).unwrap();
+        }
+        let chroot = cache.path().join("chroot-base");
+        std::fs::create_dir_all(&chroot).unwrap();
+        let runner = Arc::new(RecordingRunner::default());
+        let app = make_app(root.path(), cache.path(), runner.clone());
+
+        let removed = app.clean_with_chroot_base(true, 14, &chroot).unwrap();
+        assert_eq!(removed, 4);
+
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        let args: Vec<String> = calls[0]
+            .args
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(args.contains(&"-rf".to_string()));
+        assert!(args.contains(&"--".to_string()));
+        assert!(args.contains(&chroot.display().to_string()));
+    }
+
+    #[test]
+    fn clean_without_all_leaves_chroots_alone() {
+        let root = TempDir::new();
+        let cache = TempDir::new();
+        let chroot = cache.path().join("chroot-base");
+        std::fs::create_dir_all(&chroot).unwrap();
+        let runner = Arc::new(RecordingRunner::default());
+        let app = make_app(root.path(), cache.path(), runner.clone());
+
+        let removed = app.clean_with_chroot_base(false, 3650, &chroot).unwrap();
+        assert_eq!(removed, 0);
+        assert!(chroot.exists());
+        assert!(runner.calls.lock().unwrap().is_empty());
+    }
 }
