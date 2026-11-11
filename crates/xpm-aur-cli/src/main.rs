@@ -71,7 +71,7 @@ struct Cli {
     #[arg(long, global = true)]
     nocheck: bool,
 
-    /// Disable the clean chroot build.
+    /// Disable the clean chroot build (`xpm bootstrap` + `arch-chroot`).
     #[arg(long, global = true)]
     no_chroot: bool,
 
@@ -139,7 +139,7 @@ enum Command {
         #[arg(short = 'p', long)]
         print: bool,
     },
-    /// Remove cached build trees and artifacts.
+    /// Remove cached build trees and artifacts; --all also removes the shared chroot base.
     Clean {
         #[arg(long)]
         all: bool,
