@@ -13,6 +13,7 @@ xpm-aur-aur.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+glob.workspace = true
 flate2 = "1"
 tar = "0.4"
 zstd = "0.13"
