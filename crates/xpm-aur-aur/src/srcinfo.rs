@@ -55,6 +55,11 @@ pub fn read_srcinfo(dir: &Path) -> AurResult<SrcInfo> {
 
 /// Parse the text format emitted by `makepkg --printsrcinfo`.
 pub fn parse_srcinfo(text: &str) -> AurResult<SrcInfo> {
+    parse_srcinfo_for_arch(text, current_arch())
+}
+
+/// Parse `.SRCINFO` merging fields for `arch` and ignoring other architectures.
+pub fn parse_srcinfo_for_arch(text: &str, arch: &str) -> AurResult<SrcInfo> {
     let mut pkgbase = String::new();
     let mut packages: BTreeMap<String, SrcPackage> = BTreeMap::new();
     let mut current: Option<String> = None;
@@ -77,9 +82,7 @@ pub fn parse_srcinfo(text: &str) -> AurResult<SrcInfo> {
         };
         let key = key.trim();
         let value = value.trim();
-        // Arch-specific fields are merged only for x86_64. Entries for other
-        // architectures are irrelevant to this helper.
-        let (key, skip) = split_arch_suffix(key);
+        let (key, skip) = split_arch_suffix(key, arch);
         if skip {
             continue;
         }
@@ -149,15 +152,35 @@ pub fn parse_srcinfo(text: &str) -> AurResult<SrcInfo> {
     Ok(SrcInfo { pkgbase, packages })
 }
 
-fn split_arch_suffix(key: &str) -> (&str, bool) {
-    if let Some(base) = key.strip_suffix("_x86_64") {
+const KNOWN_ARCHES: &[&str] = &[
+    "any", "x86_64", "i686", "aarch64", "armv7h", "armv6h", "riscv64", "loong64", "ppc64le",
+    "s390x", "amd64", "arm64",
+];
+
+fn current_arch() -> &'static str {
+    match std::env::consts::ARCH {
+        "amd64" => "x86_64",
+        "arm64" => "aarch64",
+        arch => arch,
+    }
+}
+
+fn strip_arch_suffix<'a>(key: &'a str, arch: &str) -> Option<&'a str> {
+    key.strip_suffix(arch)?.strip_suffix('_')
+}
+
+fn split_arch_suffix<'a>(key: &'a str, arch: &str) -> (&'a str, bool) {
+    if let Some(base) = strip_arch_suffix(key, arch) {
         return (base, false);
     }
-    for arch in ["i686", "aarch64", "armv7h", "any"] {
-        if let Some(base) = key.strip_suffix(&format!("_{arch}")) {
-            let _ = base;
-            return (key, true);
-        }
+    if let Some(base) = strip_arch_suffix(key, "any") {
+        return (base, false);
+    }
+    if KNOWN_ARCHES
+        .iter()
+        .any(|known| strip_arch_suffix(key, known).is_some())
+    {
+        return (key, true);
     }
     (key, false)
 }
@@ -249,7 +272,7 @@ pkgname = demo-docs
 
     #[test]
     fn parses_split_packages_and_arch_specific_fields() {
-        let info = parse_srcinfo(SPLIT).unwrap();
+        let info = parse_srcinfo_for_arch(SPLIT, "x86_64").unwrap();
         assert_eq!(info.pkgbase, "demo");
         assert_eq!(
             info.package_names().collect::<Vec<_>>(),
@@ -270,5 +293,42 @@ pkgname = demo-docs
                 .iter()
                 .any(|d| d.name == "demo")
         );
+    }
+
+    #[test]
+    fn ignores_other_architectures_and_merges_the_selected_one() {
+        let info = parse_srcinfo_for_arch(SPLIT, "aarch64").unwrap();
+        let demo = &info.packages["demo"];
+        assert!(demo.depends.iter().any(|d| d.name == "ignored"));
+        assert!(!demo.depends.iter().any(|d| d.name == "glibc"));
+    }
+
+    #[test]
+    fn any_architecture_fields_are_merged_everywhere() {
+        let text = r#"
+pkgbase = demo
+    pkgver = 1.0
+    pkgrel = 1
+    depends_any = universal
+    depends_x86_64 = only-x86
+    depends_aarch64 = only-arm
+
+pkgname = demo
+"#;
+        let x86 = parse_srcinfo_for_arch(text, "x86_64").unwrap();
+        let names: Vec<&str> = x86.packages["demo"]
+            .depends
+            .iter()
+            .map(|d| d.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["universal", "only-x86"]);
+
+        let arm = parse_srcinfo_for_arch(text, "aarch64").unwrap();
+        let names: Vec<&str> = arm.packages["demo"]
+            .depends
+            .iter()
+            .map(|d| d.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["universal", "only-arm"]);
     }
 }

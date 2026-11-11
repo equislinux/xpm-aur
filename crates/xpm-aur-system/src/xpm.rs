@@ -101,6 +101,47 @@ impl XpmClient {
         Ok(())
     }
 
+    pub fn install_official_explicit(
+        &self,
+        names: &[String],
+        needed: bool,
+    ) -> Result<(), XpmError> {
+        if names.is_empty() {
+            return Ok(());
+        }
+        let mut options = vec!["--as-explicit"];
+        if needed {
+            options.push("--needed");
+        }
+        self.run(["install"], &options, names)?;
+        Ok(())
+    }
+
+    pub fn install_files_explicit(&self, paths: &[PathBuf]) -> Result<(), XpmError> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let names: Vec<OsString> = paths
+            .iter()
+            .map(|path| path.as_os_str().to_os_string())
+            .collect();
+        self.run_os(["install"], &["--as-explicit"], &names)?;
+        Ok(())
+    }
+
+    /// Remove filesystem trees (for example chroot roots) with `rm -rf`.
+    pub fn remove_paths(&self, paths: &[PathBuf]) -> Result<(), XpmError> {
+        self.remove_paths_with_root(paths, is_effective_root())
+    }
+
+    fn remove_paths_with_root(&self, paths: &[PathBuf], own_root: bool) -> Result<(), XpmError> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let (program, args) = remove_paths_command(own_root, self.sudo.as_deref(), paths);
+        self.execute(program, args)
+    }
+
     pub fn remove(&self, names: &[String], recursive: bool, nosave: bool) -> Result<(), XpmError> {
         if names.is_empty() {
             return Ok(());
@@ -157,8 +198,12 @@ impl XpmClient {
             (self.program.clone(), args)
         };
 
+        self.execute(program, full_args)
+    }
+
+    fn execute(&self, program: impl Into<OsString>, args: Vec<OsString>) -> Result<(), XpmError> {
         let spec = CommandSpec::new(program)
-            .args(full_args.clone())
+            .args(args.clone())
             .stdio(StdioMode::Inherit);
         let output = self.runner.run(&spec)?;
         if output.success {
@@ -168,8 +213,7 @@ impl XpmClient {
                 command: format!(
                     "{} {}",
                     spec.program.to_string_lossy(),
-                    full_args
-                        .iter()
+                    args.iter()
                         .map(|arg| arg.to_string_lossy())
                         .collect::<Vec<_>>()
                         .join(" ")
@@ -178,6 +222,29 @@ impl XpmClient {
             })
         }
     }
+}
+
+fn remove_paths_command(
+    own_root: bool,
+    sudo: Option<&str>,
+    paths: &[PathBuf],
+) -> (OsString, Vec<OsString>) {
+    let mut args: Vec<OsString> = Vec::new();
+    let program = if !own_root {
+        match sudo {
+            Some(sudo) => {
+                args.push("rm".into());
+                OsString::from(sudo)
+            }
+            None => OsString::from("rm"),
+        }
+    } else {
+        OsString::from("rm")
+    };
+    args.push("-rf".into());
+    args.push("--".into());
+    args.extend(paths.iter().map(|path| path.as_os_str().to_os_string()));
+    (program, args)
 }
 
 fn is_effective_root() -> bool {
@@ -255,5 +322,121 @@ mod tests {
                 .iter()
                 .any(|arg| arg.to_string_lossy() == "/tmp/demo.pkg.tar.zst")
         );
+    }
+
+    fn args_of(spec: &CommandSpec) -> Vec<String> {
+        spec.args
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn installs_official_packages_as_explicit() {
+        let runner = Arc::new(RecordingRunner::default());
+        let client = XpmClient::new(runner.clone(), "xpm", None, true);
+        client
+            .install_official_explicit(&["foo".into(), "bar".into()], true)
+            .unwrap();
+
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[0].program, "xpm");
+        assert_eq!(
+            args_of(&calls[0]),
+            vec![
+                "--no-confirm",
+                "install",
+                "--as-explicit",
+                "--needed",
+                "--",
+                "foo",
+                "bar"
+            ]
+        );
+    }
+
+    #[test]
+    fn installs_files_as_explicit() {
+        let runner = Arc::new(RecordingRunner::default());
+        let client = XpmClient::new(runner.clone(), "xpm", None, true);
+        client
+            .install_files_explicit(&[Path::new("/tmp/demo.pkg.tar.zst").to_path_buf()])
+            .unwrap();
+
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[0].program, "xpm");
+        assert_eq!(
+            args_of(&calls[0]),
+            vec![
+                "--no-confirm",
+                "install",
+                "--as-explicit",
+                "--",
+                "/tmp/demo.pkg.tar.zst"
+            ]
+        );
+    }
+
+    #[test]
+    fn removes_paths_through_sudo_when_not_root() {
+        let runner = Arc::new(RecordingRunner::default());
+        let client = XpmClient::new(runner.clone(), "xpm", Some("sudo".into()), true);
+        client
+            .remove_paths_with_root(
+                &[
+                    PathBuf::from("/tmp/build-root"),
+                    PathBuf::from("/var/lib/archbuild/xpm-aur"),
+                ],
+                false,
+            )
+            .unwrap();
+
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[0].program, "sudo");
+        assert_eq!(calls[0].stdio, StdioMode::Inherit);
+        assert_eq!(
+            args_of(&calls[0]),
+            vec![
+                "rm",
+                "-rf",
+                "--",
+                "/tmp/build-root",
+                "/var/lib/archbuild/xpm-aur"
+            ]
+        );
+    }
+
+    #[test]
+    fn removes_paths_directly_when_root() {
+        let runner = Arc::new(RecordingRunner::default());
+        let client = XpmClient::new(runner.clone(), "xpm", Some("sudo".into()), true);
+        client
+            .remove_paths_with_root(&[PathBuf::from("/tmp/build-root")], true)
+            .unwrap();
+
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[0].program, "rm");
+        assert_eq!(args_of(&calls[0]), vec!["-rf", "--", "/tmp/build-root"]);
+    }
+
+    #[test]
+    fn remove_paths_without_sudo_runs_rm_directly() {
+        let runner = Arc::new(RecordingRunner::default());
+        let client = XpmClient::new(runner.clone(), "xpm", None, true);
+        client
+            .remove_paths_with_root(&[PathBuf::from("/tmp/build-root")], false)
+            .unwrap();
+
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[0].program, "rm");
+        assert_eq!(args_of(&calls[0]), vec!["-rf", "--", "/tmp/build-root"]);
+    }
+
+    #[test]
+    fn empty_remove_paths_does_not_run_a_command() {
+        let runner = Arc::new(RecordingRunner::default());
+        let client = XpmClient::new(runner.clone(), "xpm", Some("sudo".into()), true);
+        client.remove_paths_with_root(&[], false).unwrap();
+        assert!(runner.calls.lock().unwrap().is_empty());
     }
 }
