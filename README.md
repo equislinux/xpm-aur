@@ -9,9 +9,8 @@ comes from the pacman package, and builds still execute the PKGBUILD as bash.
 What changes is the transaction backend: xpm owns installs, removals and the
 package database, and AUR metadata lives in a small, explicit sidecar.
 
-> Status: MVP. The common daily workflows are implemented and tested. Native
-> clean-chroot builds, AUR signature/attestation policy and a public binary
-> cache are future work.
+> Status: MVP. The common daily workflows are implemented and tested. AUR
+> signature/attestation policy and a public binary cache are future work.
 
 ## Features
 
@@ -20,7 +19,10 @@ package database, and AUR metadata lives in a small, explicit sidecar.
 - `provides`, version constraints, conflicts, replacements and split packages.
 - Build order for AUR package bases; independent bases build in parallel while
   xpm installs and state updates stay sequential.
-- Builds through `xpm build`; clean pacstrap/systemd-nspawn chroots are used by default.
+- Builds through `xpm build` in clean chroots prepared with `xpm bootstrap` and
+  entered with `arch-chroot`. One shared `base-devel` template is reused per
+  architecture; each build gets a cheap disposable copy (btrfs snapshot,
+  reflink or overlayfs) and shares xpm's package cache and sync database.
 - xpm installs the resulting packages.
 - Installs, removes and upgrades through xpm.
 - Tracks `origin=aur`, AUR version and git commit in a sidecar state file.
@@ -45,10 +47,14 @@ From the X repository:
 xpm install xpm-aur
 ```
 
-Runtime requirements: `xpm >= 0.1.0-7`, `pacman` (for `makepkg`), `git`, `base-devel`,
-`arch-install-scripts` and `systemd-nspawn` (for clean chroots),
-and a normal user for building. `xpm-aur` must not be run as root; it invokes
-the configured sudo command for xpm transactions.
+Runtime requirements: `xpm >= 0.1.0-30`, `pacman` (for `makepkg`), `git`,
+`base-devel`, `arch-install-scripts` (for `arch-chroot`), and a normal user for
+building. xpm-aur invokes the configured sudo command for xpm transactions and
+for `xpm build` when it needs a chroot.
+
+Run xpm-aur as a normal user. The X installer is the only supported root path:
+it builds inside a chroot. If chroot builds are disabled (`--no-chroot`), root
+execution is rejected instead of failing later in makepkg.
 
 ## Usage
 
@@ -108,6 +114,15 @@ packages/    built .pkg.tar.zst files
 sources/     makepkg source cache
 ```
 
+`xpm-aur clean --all` also removes the shared chroot base at
+`/var/lib/archbuild/xpm-aur` (configurable with `paths.chroot`); a plain
+`clean` leaves chroots alone.
+
+The chroot template is refreshed automatically after 7 days, when it is
+missing or incomplete, or with `xpm build --chroot-refresh`. Build dependencies are
+installed inside the disposable root by `xpm`; the host only receives runtime
+dependencies in chroot mode.
+
 ## Configuration
 
 Optional `~/.config/xpm-aur/config.toml`:
@@ -132,6 +147,7 @@ build = "~/.cache/xpm-aur/build"
 packages = "~/.cache/xpm-aur/packages"
 sources = "~/.cache/xpm-aur/sources"
 cache = "~/.cache/xpm-aur"
+chroot = "/var/lib/archbuild/xpm-aur"
 state = "~/.local/state/xpm-aur/state.json"
 ```
 
@@ -141,9 +157,11 @@ Command-line flags override the file; `XPM_AUR_CONFIG`, `XPM_AUR_STATE` and
 ## Safety
 
 - AUR PKGBUILDs are untrusted executable bash. Review them before building.
-  `xpm-aur` does not sandbox builds yet; use a clean chroot when that lands.
-- `xpm-aur` never runs `makepkg` directly, never builds as root, and never calls
-  `pacman` to install.
+  Builds run in a clean chroot by default (`xpm bootstrap` plus `arch-chroot`),
+  but the chroot is not a security sandbox against hostile build scripts.
+- `xpm-aur` never runs `makepkg` directly and never calls `pacman` to install.
+  The only root build path is the X installer, which deliberately uses a clean
+  chroot.
 - `xpm-aur` does not sign or publish built packages. A local signed binary
   repository is planned.
 - Do not run `xpm-aur` and yay/pacman concurrently. xpm locks its own

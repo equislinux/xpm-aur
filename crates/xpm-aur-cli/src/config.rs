@@ -69,6 +69,8 @@ pub struct PathSettings {
     pub sources: Option<String>,
     pub cache: Option<String>,
     pub state: Option<String>,
+    /// Base directory for the shared chroot template and disposable roots.
+    pub chroot: Option<String>,
 }
 
 #[derive(Clone, Debug)]

@@ -36,6 +36,9 @@ pub enum AppError {
     #[error("no AUR updates available")]
     NoUpdates,
 
+    #[error("no official sync database found; run `xpm-aur sync` first")]
+    NoSyncDatabase,
+
     #[error("I/O error at {path}: {source}")]
     Io {
         path: String,

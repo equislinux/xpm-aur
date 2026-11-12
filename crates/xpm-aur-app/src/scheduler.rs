@@ -193,6 +193,7 @@ mod tests {
                 .iter()
                 .map(|dependency| (*dependency).into())
                 .collect(),
+            build_deps: Vec::new(),
         }
     }
 

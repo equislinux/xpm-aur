@@ -4,7 +4,7 @@
 //! authoritative view of installed packages for both tools. Sync databases are
 //! used only to resolve official packages; transactions always go through xpm.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -55,6 +55,9 @@ impl From<DbError> for CoreError {
     }
 }
 
+const DEFAULT_XPM_DB_PATH: &str = "/var/lib/xpm";
+const MAX_INCLUDE_DEPTH: usize = 32;
+
 /// A pacman installation rooted at `root`.
 pub struct PacmanDatabase {
     root: PathBuf,
@@ -96,15 +99,46 @@ impl PacmanDatabase {
         self.dbpath.join("local")
     }
 
+    pub fn xpm_config_path(&self) -> PathBuf {
+        self.root.join("etc/xpm.conf")
+    }
+
+    /// xpm's database root, honouring `options.db_path` from `/etc/xpm.conf`.
+    pub fn xpm_db_path(&self) -> PathBuf {
+        let configured = std::fs::read_to_string(self.xpm_config_path())
+            .ok()
+            .and_then(|text| parse_xpm_db_path(&text))
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_XPM_DB_PATH));
+        self.path_under_root(&configured)
+    }
+
+    pub fn xpm_local_path(&self) -> PathBuf {
+        self.xpm_db_path().join("local")
+    }
+
+    fn path_under_root(&self, path: &Path) -> PathBuf {
+        match path.strip_prefix("/") {
+            Ok(relative) => self.root.join(relative),
+            Err(_) => self.root.join(path),
+        }
+    }
+
     /// Sync databases are read from xpm's own database when present. This is
     /// essential: `xpm sync` refreshes `/var/lib/xpm/sync`, not pacman's.
     pub fn sync_path(&self) -> PathBuf {
-        let xpm_sync = self.root.join("var/lib/xpm/sync");
+        let xpm_sync = self.xpm_db_path().join("sync");
         if contains_sync_db(&xpm_sync) {
             xpm_sync
         } else {
             self.dbpath.join("sync")
         }
+    }
+
+    /// Whether an xpm or pacman sync database can be read.
+    pub fn has_sync(&self) -> bool {
+        contains_sync_db(&self.xpm_db_path().join("sync"))
+            || contains_sync_db(&self.dbpath.join("sync"))
     }
 
     pub fn config_path(&self) -> &Path {
@@ -113,44 +147,28 @@ impl PacmanDatabase {
 
     /// Load all installed packages. There is no cache because xpm transactions
     /// can change this database between commands.
+    ///
+    /// Both databases are merged so mixed pacman/xpm systems keep working. For
+    /// the same name the newest version wins; on a tie the xpm record is
+    /// authoritative because xpm owns its transactions.
     pub fn installed(&self) -> Result<Vec<Candidate>, DbError> {
-        let local = self.local_path();
-        let entries = match std::fs::read_dir(&local) {
-            Ok(entries) => entries,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(source) => {
-                return Err(DbError::Io {
-                    path: local.display().to_string(),
-                    source,
-                });
-            }
-        };
+        let mut packages: std::collections::BTreeMap<String, Candidate> =
+            std::collections::BTreeMap::new();
 
-        let mut packages = Vec::new();
-        for entry in entries {
-            let entry = entry.map_err(|source| DbError::Io {
-                path: local.display().to_string(),
-                source,
-            })?;
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
+        for candidate in installed_from_pacman(&self.local_path())? {
+            packages.insert(candidate.meta.name.clone(), candidate);
+        }
+        for candidate in installed_from_xpm(&self.xpm_local_path())? {
+            let replace = packages
+                .get(&candidate.meta.name)
+                .map(|existing| existing.meta.version <= candidate.meta.version)
+                .unwrap_or(true);
+            if replace {
+                packages.insert(candidate.meta.name.clone(), candidate);
             }
-            let desc_path = path.join("desc");
-            if !desc_path.is_file() {
-                continue;
-            }
-            let desc = parse_desc(&desc_path)?;
-            let mut candidate = candidate_from_desc(&desc, &desc_path, CandidateSource::Installed)?;
-            candidate.reason = Some(match desc_first(&desc, "REASON").unwrap_or("0") {
-                "1" => InstallReason::Dependency,
-                _ => InstallReason::Explicit,
-            });
-            packages.push(candidate);
         }
 
-        packages.sort_by(|a, b| a.meta.name.cmp(&b.meta.name));
-        Ok(packages)
+        Ok(packages.into_values().collect())
     }
 
     /// All sync candidates, loaded once per process.
@@ -276,25 +294,302 @@ impl PacmanDatabase {
 
     fn repo_order(&self) -> Vec<String> {
         let mut order = Vec::new();
-        if let Ok(text) = std::fs::read_to_string(&self.config) {
-            for line in text.lines() {
-                let line = line.split('#').next().unwrap_or("").trim();
-                if let Some(name) = line
-                    .strip_prefix('[')
-                    .and_then(|line| line.strip_suffix(']'))
-                {
-                    let name = name.trim();
-                    if name != "options" && !name.is_empty() {
-                        order.push(name.to_string());
-                    }
-                }
-            }
-        }
+        let mut visited = HashSet::new();
+        collect_repo_order(&self.config, 0, &mut visited, &mut order);
         if order.is_empty() {
             order = vec!["core".into(), "extra".into(), "multilib".into(), "x".into()];
         }
         order
     }
+}
+
+fn installed_from_pacman(local: &Path) -> Result<Vec<Candidate>, DbError> {
+    let entries = match std::fs::read_dir(local) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(source) => {
+            return Err(DbError::Io {
+                path: local.display().to_string(),
+                source,
+            });
+        }
+    };
+
+    let mut packages: std::collections::BTreeMap<String, Candidate> =
+        std::collections::BTreeMap::new();
+    for entry in entries {
+        let entry = entry.map_err(|source| DbError::Io {
+            path: local.display().to_string(),
+            source,
+        })?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let desc_path = path.join("desc");
+        if !desc_path.is_file() {
+            continue;
+        }
+        let desc = parse_desc(&desc_path)?;
+        let mut candidate = candidate_from_desc(&desc, &desc_path, CandidateSource::Installed)?;
+        candidate.reason = Some(match desc_first(&desc, "REASON").unwrap_or("0") {
+            "1" => InstallReason::Dependency,
+            _ => InstallReason::Explicit,
+        });
+        let replace = packages
+            .get(&candidate.meta.name)
+            .map(|existing| existing.meta.version <= candidate.meta.version)
+            .unwrap_or(true);
+        if replace {
+            packages.insert(candidate.meta.name.clone(), candidate);
+        }
+    }
+    Ok(packages.into_values().collect())
+}
+
+fn installed_from_xpm(local: &Path) -> Result<Vec<Candidate>, DbError> {
+    let entries = match std::fs::read_dir(local) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(source) => {
+            return Err(DbError::Io {
+                path: local.display().to_string(),
+                source,
+            });
+        }
+    };
+
+    let mut packages = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|source| DbError::Io {
+            path: local.display().to_string(),
+            source,
+        })?;
+        let package_dir = entry.path();
+        if !package_dir.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let version_path = package_dir.join("version");
+        let Some(version) = read_optional_line(&version_path)? else {
+            continue;
+        };
+        if version.is_empty() {
+            continue;
+        }
+        let version = Evr::parse(&version).map_err(|err| DbError::Parse {
+            path: version_path.display().to_string(),
+            message: err.to_string(),
+        })?;
+        let depends = read_dependency_file(&package_dir.join("depends"))?;
+        let provides = read_dependency_file(&package_dir.join("provides"))?;
+        let _origin = read_optional_line(&package_dir.join("origin"))?;
+        let reason = match read_optional_line(&package_dir.join("reason"))?.as_deref() {
+            Some(reason) if reason.eq_ignore_ascii_case("dep") => InstallReason::Dependency,
+            _ => InstallReason::Explicit,
+        };
+        let meta = PackageMeta {
+            name: name.clone(),
+            base: name,
+            version,
+            description: None,
+            url: None,
+            depends,
+            make_depends: Vec::new(),
+            check_depends: Vec::new(),
+            opt_depends: Vec::new(),
+            provides,
+            conflicts: Vec::new(),
+            replaces: Vec::new(),
+        };
+        let mut candidate = Candidate::new(meta, CandidateSource::Installed);
+        candidate.reason = Some(reason);
+        packages.push(candidate);
+    }
+
+    packages.sort_by(|a, b| a.meta.name.cmp(&b.meta.name));
+    Ok(packages)
+}
+
+fn read_optional_line(path: &Path) -> Result<Option<String>, DbError> {
+    match std::fs::read_to_string(path) {
+        Ok(raw) => Ok(Some(raw.trim().to_string())),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(DbError::Io {
+            path: path.display().to_string(),
+            source,
+        }),
+    }
+}
+
+fn read_dependency_file(path: &Path) -> Result<Vec<Dependency>, DbError> {
+    let raw = match std::fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(source) => {
+            return Err(DbError::Io {
+                path: path.display().to_string(),
+                source,
+            });
+        }
+    };
+    raw.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            Dependency::parse(line).map_err(|err| DbError::Parse {
+                path: path.display().to_string(),
+                message: err.to_string(),
+            })
+        })
+        .collect()
+}
+
+fn collect_repo_order(
+    path: &Path,
+    depth: usize,
+    visited: &mut HashSet<PathBuf>,
+    order: &mut Vec<String>,
+) {
+    if depth > MAX_INCLUDE_DEPTH {
+        return;
+    }
+    let key = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    if !visited.insert(key) {
+        return;
+    }
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return;
+    };
+    for raw in text.lines() {
+        let line = raw.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            let name = line[1..line.len() - 1].trim();
+            if !name.is_empty() && name != "options" {
+                order.push(name.to_string());
+            }
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if !key.trim().eq_ignore_ascii_case("include") {
+            continue;
+        }
+        let pattern = value.trim().trim_matches(|ch| ch == '"' || ch == '\'');
+        if pattern.is_empty() {
+            continue;
+        }
+        let pattern = if Path::new(pattern).is_absolute() {
+            PathBuf::from(pattern)
+        } else {
+            path.parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(pattern)
+        };
+        let mut matches: Vec<PathBuf> = match glob::glob(&pattern.to_string_lossy()) {
+            Ok(paths) => paths.filter_map(Result::ok).collect(),
+            Err(_) => vec![pattern],
+        };
+        matches.sort();
+        for included in matches {
+            collect_repo_order(&included, depth + 1, visited, order);
+        }
+    }
+}
+
+fn parse_xpm_db_path(text: &str) -> Option<PathBuf> {
+    let mut in_options = false;
+    for raw in text.lines() {
+        let line = strip_toml_comment(raw).trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(section) = line
+            .strip_prefix('[')
+            .and_then(|line| line.strip_suffix(']'))
+        {
+            in_options = section.trim() == "options";
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        if !((in_options && key == "db_path") || key == "options.db_path") {
+            continue;
+        }
+        let value = toml_string(value.trim())?;
+        return (!value.is_empty()).then(|| PathBuf::from(value));
+    }
+    None
+}
+
+fn strip_toml_comment(line: &str) -> &str {
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for (index, ch) in line.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match quote {
+            Some('"') if ch == '\\' => escaped = true,
+            Some(open) if ch == open => quote = None,
+            Some(_) => {}
+            None if ch == '"' || ch == '\'' => quote = Some(ch),
+            None if ch == '#' => return &line[..index],
+            None => {}
+        }
+    }
+    line
+}
+
+fn toml_string(value: &str) -> Option<String> {
+    if value.len() >= 2 {
+        let bytes = value.as_bytes();
+        let first = bytes[0];
+        let last = bytes[bytes.len() - 1];
+        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
+            let inner = &value[1..value.len() - 1];
+            return Some(if first == b'\'' {
+                inner.to_string()
+            } else {
+                unescape_toml(inner)
+            });
+        }
+    }
+    if value.starts_with('"') || value.starts_with('\'') {
+        return None;
+    }
+    Some(value.to_string())
+}
+
+fn unescape_toml(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut chars = value.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            out.push(ch);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('r') => out.push('\r'),
+            Some('"') => out.push('"'),
+            Some('\\') => out.push('\\'),
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
 }
 
 fn contains_sync_db(path: &Path) -> bool {
@@ -534,6 +829,219 @@ mod tests {
         root
     }
 
+    fn write_file(path: &Path, contents: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, contents).unwrap();
+    }
+
+    fn write_pacman_entry(root: &Path, name: &str, version: &str) {
+        write_file(
+            &root.join(format!("var/lib/pacman/local/{name}-{version}/desc")),
+            &format!("%NAME%\n{name}\n\n%VERSION%\n{version}\n\n%REASON%\n0\n"),
+        );
+    }
+
+    fn write_xpm_entry(db: &Path, name: &str, fields: &[(&str, &str)]) {
+        let dir = db.join("local").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (file, contents) in fields {
+            std::fs::write(dir.join(file), contents).unwrap();
+        }
+    }
+
+    #[test]
+    fn merges_xpm_and_pacman_local_databases() {
+        let root = temp_root();
+        write_pacman_entry(&root, "pacman-only", "1.0-1");
+        write_xpm_entry(
+            &root.join("var/lib/xpm"),
+            "foo",
+            &[
+                ("version", "2.0-1\n"),
+                ("depends", "glibc>=2\nlibfoo\n"),
+                ("provides", "foo-virtual=2\n"),
+                ("reason", "dep\n"),
+                ("origin", "x\n"),
+            ],
+        );
+
+        let db = PacmanDatabase::new(&root);
+        let installed = db.installed().unwrap();
+        assert_eq!(installed.len(), 2);
+        let foo = installed
+            .iter()
+            .find(|candidate| candidate.meta.name == "foo")
+            .unwrap();
+        assert_eq!(foo.meta.version.to_string(), "2.0-1");
+        assert_eq!(foo.reason, Some(InstallReason::Dependency));
+        assert!(
+            foo.meta
+                .depends
+                .iter()
+                .any(|dependency| dependency.name == "glibc")
+        );
+        assert!(
+            foo.meta
+                .provides
+                .iter()
+                .any(|dependency| dependency.name == "foo-virtual")
+        );
+        assert!(
+            installed
+                .iter()
+                .any(|candidate| candidate.meta.name == "pacman-only")
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn newest_version_wins_when_both_databases_have_a_package() {
+        let root = temp_root();
+        write_pacman_entry(&root, "foo", "1.0-1");
+        write_xpm_entry(
+            &root.join("var/lib/xpm"),
+            "foo",
+            &[("version", "2.0-1\n"), ("reason", "explicit\n")],
+        );
+        let db = PacmanDatabase::new(&root);
+        let installed = db.installed().unwrap();
+        assert_eq!(installed.len(), 1);
+        assert_eq!(installed[0].meta.version.to_string(), "2.0-1");
+
+        write_pacman_entry(&root, "foo", "3.0-1");
+        let installed = db.installed().unwrap();
+        assert_eq!(installed[0].meta.version.to_string(), "3.0-1");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn falls_back_to_pacman_local_database() {
+        let root = temp_root();
+        write_pacman_entry(&root, "bar", "3.1-2");
+
+        let db = PacmanDatabase::new(&root);
+        let installed = db.installed().unwrap();
+        assert_eq!(installed.len(), 1);
+        assert_eq!(installed[0].meta.name, "bar");
+        assert_eq!(installed[0].meta.version.to_string(), "3.1-2");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn honours_xpm_db_path_override() {
+        let root = temp_root();
+        write_file(
+            &root.join("etc/xpm.conf"),
+            "[options]\nmirror_pacman = true\ndb_path = \"/srv/xpm-db\" # custom\n",
+        );
+        write_xpm_entry(
+            &root.join("srv/xpm-db"),
+            "custom",
+            &[("version", "1.2-3\n")],
+        );
+        write_xpm_entry(
+            &root.join("var/lib/xpm"),
+            "default-db",
+            &[("version", "9.9-9\n")],
+        );
+        write_file(&root.join("srv/xpm-db/sync/core.db"), "");
+
+        let db = PacmanDatabase::new(&root);
+        assert_eq!(db.xpm_db_path(), root.join("srv/xpm-db"));
+        assert_eq!(db.xpm_local_path(), root.join("srv/xpm-db/local"));
+        assert_eq!(db.sync_path(), root.join("srv/xpm-db/sync"));
+        assert!(db.has_sync());
+        let installed = db.installed().unwrap();
+        assert_eq!(installed.len(), 1);
+        assert_eq!(installed[0].meta.name, "custom");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn parses_targeted_xpm_conf() {
+        assert_eq!(
+            parse_xpm_db_path("[options]\ndb_path = \"/srv/xpm\"\n"),
+            Some(PathBuf::from("/srv/xpm"))
+        );
+        assert_eq!(
+            parse_xpm_db_path("[options]\ndb_path = '/srv/xpm' # comment\n"),
+            Some(PathBuf::from("/srv/xpm"))
+        );
+        assert_eq!(
+            parse_xpm_db_path("options.db_path = \"/srv/xpm\"\n"),
+            Some(PathBuf::from("/srv/xpm"))
+        );
+        assert_eq!(
+            parse_xpm_db_path("[options]\nmirror_pacman = false\n"),
+            None
+        );
+        assert_eq!(parse_xpm_db_path("[repo]\ndb_path = \"/ignored\"\n"), None);
+        assert_eq!(parse_xpm_db_path(""), None);
+    }
+
+    #[test]
+    fn expands_nested_and_globbed_pacman_includes() {
+        let root = temp_root();
+        let conf_dir = root.join("etc/pacman.d");
+        write_file(
+            &root.join("etc/pacman.conf"),
+            &format!(
+                "[options]\nHoldPkg = pacman\n\n[core]\nInclude = {}/repos/*.conf\n",
+                conf_dir.display()
+            ),
+        );
+        write_file(
+            &conf_dir.join("repos/a.conf"),
+            "[extra]\nInclude = nested.conf\n",
+        );
+        write_file(&conf_dir.join("repos/b.conf"), "[x-custom]\n");
+        write_file(&conf_dir.join("repos/nested.conf"), "[nested]\n");
+
+        let db = PacmanDatabase::new(&root);
+        assert_eq!(db.repo_order(), vec!["core", "extra", "nested", "x-custom"]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn include_cycles_and_missing_files_terminate() {
+        let root = temp_root();
+        write_file(
+            &root.join("etc/pacman.conf"),
+            "[core]\nInclude = pacman.conf\nInclude = /does/not/exist.conf\n",
+        );
+        let db = PacmanDatabase::new(&root);
+        assert_eq!(db.repo_order(), vec!["core"]);
+        std::fs::remove_dir_all(root).unwrap();
+
+        let root = temp_root();
+        let db = PacmanDatabase::new(&root);
+        assert_eq!(
+            db.repo_order(),
+            vec!["core", "extra", "multilib", "x"],
+            "missing pacman.conf uses the built-in order"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn has_sync_detects_xpm_and_pacman_databases() {
+        let root = temp_root();
+        let db = PacmanDatabase::new(&root);
+        assert!(!db.has_sync());
+
+        write_file(&root.join("var/lib/pacman/sync/core.db"), "");
+        assert!(db.has_sync());
+        assert_eq!(db.sync_path(), root.join("var/lib/pacman/sync"));
+        std::fs::remove_dir_all(root).unwrap();
+
+        let root = temp_root();
+        write_file(&root.join("var/lib/xpm/sync/core.db"), "");
+        let db = PacmanDatabase::new(&root);
+        assert!(db.has_sync());
+        assert_eq!(db.sync_path(), root.join("var/lib/xpm/sync"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn reads_local_and_sync_databases() {
         let root = temp_root();
@@ -618,6 +1126,7 @@ mod tests {
         let db = PacmanDatabase::new(&root);
         assert!(db.installed().unwrap().is_empty());
         assert!(db.sync_packages().unwrap().is_empty());
+        assert!(!db.has_sync());
         std::fs::remove_dir_all(root).unwrap();
     }
 

@@ -40,9 +40,15 @@ pub struct BuildConfig {
     pub srcdest: Option<PathBuf>,
     pub builddir: Option<PathBuf>,
     pub run_checks: bool,
-    /// Build in a clean pacstrap/systemd-nspawn chroot.
+    /// Build in a clean chroot.
     pub chroot: bool,
+    /// Base directory for the shared template and disposable build copies.
     pub chroot_dir: Option<PathBuf>,
+    /// Run `xpm build` through this program (usually `sudo`) when the caller
+    /// is not root. Chroot setup needs root for mounts and arch-chroot.
+    pub sudo: Option<String>,
+    /// Pass --nodeps to makepkg; dependencies are installed with xpm first.
+    pub nodeps: bool,
     pub extra_args: Vec<String>,
 }
 
@@ -56,6 +62,8 @@ impl BuildConfig {
             run_checks: true,
             chroot: false,
             chroot_dir: None,
+            sudo: None,
+            nodeps: false,
             extra_args: Vec::new(),
         }
     }
@@ -65,6 +73,13 @@ impl BuildConfig {
 pub struct XpmBuilder {
     runner: Arc<dyn CommandRunner>,
     config: BuildConfig,
+}
+
+fn is_effective_root() -> bool {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata("/proc/self")
+        .map(|metadata| metadata.uid() == 0)
+        .unwrap_or(false)
 }
 
 #[derive(Deserialize)]
@@ -83,6 +98,7 @@ impl XpmBuilder {
         checkout: &Path,
         package_base: &str,
         preinstall: &[PathBuf],
+        chroot_install: &[String],
     ) -> BuildResult<BuildArtifacts> {
         let pkgdest = self.config.pkgdest.join(package_base);
         if pkgdest.exists() {
@@ -97,28 +113,46 @@ impl XpmBuilder {
         })?;
 
         let json_path = pkgdest.join(".xpm-build.json");
-        let mut spec = CommandSpec::new(&self.config.program)
-            .arg("build")
-            .arg(checkout)
-            .arg("--pkgdest")
-            .arg(&pkgdest)
-            .arg("--json")
-            .arg(&json_path)
-            .stdio(StdioMode::Inherit);
+        let use_sudo = self.config.chroot
+            && !is_effective_root()
+            && self
+                .config
+                .sudo
+                .as_deref()
+                .is_some_and(|sudo| !sudo.is_empty());
+        let mut spec = if use_sudo {
+            CommandSpec::new(self.config.sudo.as_deref().unwrap_or("sudo"))
+                .arg(&self.config.program)
+        } else {
+            CommandSpec::new(&self.config.program)
+        }
+        .arg("build")
+        .arg(checkout)
+        .arg("--pkgdest")
+        .arg(&pkgdest)
+        .arg("--json")
+        .arg(&json_path)
+        .stdio(StdioMode::Inherit);
 
         if !self.config.run_checks {
             spec = spec.arg("--nocheck");
         }
         if self.config.chroot {
             spec = spec.arg("--chroot");
-            // One chroot per package base: parallel AUR builds must never
-            // share pacstrap/root or one build can unmount files from another.
+            // A shared template is safe: xpm isolates every build in its own
+            // work directory and serializes template creation with a lock.
             let root = self
                 .config
                 .chroot_dir
                 .clone()
                 .unwrap_or_else(|| PathBuf::from("/var/lib/archbuild/xpm-aur"));
-            spec = spec.arg("--chroot-dir").arg(root.join(package_base));
+            spec = spec.arg("--chroot-dir").arg(root);
+            for package in chroot_install {
+                spec = spec.arg("--chroot-install").arg(package);
+            }
+            if self.config.nodeps {
+                spec = spec.arg("--nodeps");
+            }
         }
         if let Some(srcdest) = &self.config.srcdest {
             spec = spec.arg("--srcdest").arg(srcdest);
@@ -204,7 +238,7 @@ mod tests {
         ));
         let builder = XpmBuilder::new(runner.clone(), BuildConfig::new(&pkgdest));
         let checkout = std::env::temp_dir().join("xpm-aur-build-checkout");
-        let artifacts = builder.build(&checkout, "demo", &[]).unwrap();
+        let artifacts = builder.build(&checkout, "demo", &[], &[]).unwrap();
         assert_eq!(artifacts.base, "demo");
         assert_eq!(artifacts.packages[0].name, "demo");
 
@@ -217,6 +251,54 @@ mod tests {
         assert_eq!(args[0], "build");
         assert!(args.contains(&"--json".to_string()));
         assert!(args.contains(&"--pkgdest".to_string()));
+        let _ = std::fs::remove_dir_all(pkgdest);
+    }
+
+    #[test]
+    fn passes_shared_chroot_deps_and_nodeps() {
+        let runner = Arc::new(FakeXpm::default());
+        let pkgdest = std::env::temp_dir().join(format!(
+            "xpm-aur-build-chroot-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut config = BuildConfig::new(&pkgdest);
+        config.chroot = true;
+        config.chroot_dir = Some(std::path::PathBuf::from("/var/lib/archbuild/xpm-aur"));
+        config.nodeps = true;
+        let builder = XpmBuilder::new(runner.clone(), config);
+        builder
+            .build(
+                &std::env::temp_dir().join("xpm-aur-build-checkout"),
+                "demo",
+                &[],
+                &["gtk3".into(), "nss".into()],
+            )
+            .unwrap();
+
+        let calls = runner.calls.lock().unwrap();
+        let args: Vec<String> = calls[0]
+            .args
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(args.contains(&"--chroot".to_string()));
+        assert!(args.contains(&"--nodeps".to_string()));
+        assert_eq!(
+            args.iter()
+                .position(|arg| arg == "--chroot-dir")
+                .map(|index| args[index + 1].as_str()),
+            Some("/var/lib/archbuild/xpm-aur")
+        );
+        assert_eq!(
+            args.iter().filter(|arg| *arg == "--chroot-install").count(),
+            2
+        );
+        assert!(args.contains(&"gtk3".to_string()));
+        assert!(args.contains(&"nss".to_string()));
         let _ = std::fs::remove_dir_all(pkgdest);
     }
 }

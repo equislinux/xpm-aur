@@ -77,4 +77,17 @@ pub trait PackageCatalog {
     /// AUR candidates matching the dependency name or a provided virtual name.
     /// Exact-name matches must come before providers.
     fn aur_candidates(&self, dependency: &Dependency) -> CoreResult<Vec<Candidate>>;
+
+    /// Whether an exact package name is available from an official repository.
+    ///
+    /// The resolver uses this only for build dependencies that are already
+    /// installed: official packages can be reinstalled inside a clean chroot,
+    /// while foreign packages must be rebuilt or supplied as artifacts.
+    fn is_official_package(&self, name: &str) -> CoreResult<bool> {
+        let dependency = Dependency::parse(name)?;
+        Ok(self
+            .official_candidates(&dependency)?
+            .iter()
+            .any(|candidate| candidate.meta.name == name))
+    }
 }

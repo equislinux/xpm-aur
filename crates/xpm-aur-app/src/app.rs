@@ -27,6 +27,8 @@ pub struct AppPaths {
     pub package_root: PathBuf,
     pub sources_root: PathBuf,
     pub cache_root: PathBuf,
+    /// Base directory for the shared chroot template and disposable roots.
+    pub chroot_root: PathBuf,
 }
 
 impl Default for AppPaths {
@@ -37,6 +39,7 @@ impl Default for AppPaths {
             package_root: cache.join("packages"),
             sources_root: cache.join("sources"),
             cache_root: cache,
+            chroot_root: PathBuf::from("/var/lib/archbuild/xpm-aur"),
         }
     }
 }

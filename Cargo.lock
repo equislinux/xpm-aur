@@ -275,6 +275,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "glob"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
+
+[[package]]
 name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1180,7 +1186,7 @@ dependencies = [
 
 [[package]]
 name = "xpm-aur-app"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "dirs",
  "thiserror",
@@ -1189,11 +1195,12 @@ dependencies = [
  "xpm-aur-build",
  "xpm-aur-core",
  "xpm-aur-system",
+ "xpm-progress",
 ]
 
 [[package]]
 name = "xpm-aur-aur"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "serde",
  "serde_json",
@@ -1205,7 +1212,7 @@ dependencies = [
 
 [[package]]
 name = "xpm-aur-build"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "serde",
  "serde_json",
@@ -1215,7 +1222,7 @@ dependencies = [
 
 [[package]]
 name = "xpm-aur-cli"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "clap",
@@ -1232,7 +1239,7 @@ dependencies = [
 
 [[package]]
 name = "xpm-aur-core"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "serde",
  "thiserror",
@@ -1240,11 +1247,12 @@ dependencies = [
 
 [[package]]
 name = "xpm-aur-system"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "dirs",
  "flate2",
  "fs2",
+ "glob",
  "serde",
  "serde_json",
  "tar",
@@ -1253,6 +1261,14 @@ dependencies = [
  "xpm-aur-core",
  "xz2",
  "zstd",
+]
+
+[[package]]
+name = "xpm-progress"
+version = "0.1.0"
+source = "git+https://github.com/equislinux/xpm?tag=xpm-progress-v0.1.0#a3d62e3dd5029295805cf4c56962c30521084c57"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
