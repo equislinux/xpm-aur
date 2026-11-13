@@ -83,11 +83,12 @@ Builds may overlap; xpm installs and sidecar updates are serialized.
 
 ## Databases
 
-- Installed packages: pacman local DB, because xpm mirrors every transaction
-  there. This is the shared source of truth for both tools.
-- Official sync metadata: xpm's sync DB (`/var/lib/xpm/sync`) when present,
-  falling back to pacman's sync DB. This matters because `xpm sync` refreshes
-  its own database, not pacman's.
+- Installed packages: xpm's local DB (`/var/lib/xpm/local`) is the native
+  source of truth. Pacman's local DB is merged only with
+  `--compat-pacman-db` / `[database] compat_pacman = true`.
+- Official sync metadata: xpm's sync DB (`/var/lib/xpm/sync`). Pacman's sync
+  DB is a fallback only in explicit compatibility mode; `xpm sync` refreshes
+  xpm's own database.
 - Sync DBs are read as gzip, xz, zstd or plain tar.
 - AUR metadata: RPC v5 for resolution; `.SRCINFO` in the checkout for
   validation and split-package names.
@@ -108,7 +109,7 @@ Builds may overlap; xpm installs and sidecar updates are serialized.
 - Core tests use fake catalogs and cover versions, dependencies, providers,
   constraints, split builds, cycles and conflicts.
 - AUR tests use JSON fixtures for RPC records and sample `.SRCINFO`.
-- Pacman DB tests build real tar archives (gzip/zstd) and parse them.
+- DB tests build real tar archives (gzip/zstd) and parse them; pacman merge tests are explicit compatibility cases.
 - CLI tests cover yay argv rewriting.
 - End-to-end manual check: build `yay` from AUR with a fake xpm binary; verify
   artifact creation and sidecar contents without touching the host package DB.

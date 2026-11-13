@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Host adapters: pacman databases, xpm transactions and AUR state"
+description = "Host adapters: xpm databases, opt-in pacman compatibility, transactions and AUR state"
 
 [dependencies]
 xpm-aur-core.workspace = true

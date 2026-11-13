@@ -13,7 +13,15 @@ pub struct FileConfig {
     pub aur: AurConfig,
     pub build: BuildSettings,
     pub commands: CommandSettings,
+    pub database: DatabaseSettings,
     pub paths: PathSettings,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct DatabaseSettings {
+    /// Also read pacman's local/sync DBs (default: xpm only).
+    pub compat_pacman: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -83,6 +91,7 @@ pub struct Config {
     pub chroot: bool,
     pub extra_args: Vec<String>,
     pub jobs: Option<usize>,
+    pub compat_pacman_db: bool,
     pub paths: PathSettings,
     pub state: Option<PathBuf>,
 }
@@ -98,6 +107,7 @@ impl Default for Config {
             chroot: true,
             extra_args: Vec::new(),
             jobs: None,
+            compat_pacman_db: false,
             paths: PathSettings::default(),
             state: None,
         }
@@ -133,6 +143,7 @@ impl Config {
             chroot: file.build.chroot,
             extra_args: file.build.extra_args,
             jobs: file.build.jobs,
+            compat_pacman_db: file.database.compat_pacman,
             paths: file.paths.clone(),
             state: file.paths.state.as_deref().map(expand_path),
         })
@@ -153,4 +164,19 @@ pub fn expand_path(input: &str) -> PathBuf {
         }
     }
     PathBuf::from(input)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pacman_compat_is_opt_in() {
+        let empty: FileConfig = toml::from_str("").expect("empty config");
+        assert!(!empty.database.compat_pacman);
+
+        let compat: FileConfig =
+            toml::from_str("[database]\ncompat_pacman = true\n").expect("compat config");
+        assert!(compat.database.compat_pacman);
+    }
 }

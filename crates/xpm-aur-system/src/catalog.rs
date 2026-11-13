@@ -1,4 +1,5 @@
-//! Combines pacman repositories and AUR RPC into the resolver catalog port.
+//! Combines xpm repositories (with opt-in pacman compatibility) and AUR RPC
+//! into the resolver catalog port.
 
 use xpm_aur_aur::{AurRpc, SearchBy};
 use xpm_aur_core::catalog::{Candidate, PackageCatalog};
@@ -7,7 +8,7 @@ use xpm_aur_core::error::{CoreError, CoreResult};
 
 use crate::pacman_db::PacmanDatabase;
 
-/// Catalog backed by the real host: pacman DBs plus AUR RPC.
+/// Catalog backed by the real host: xpm DBs plus AUR RPC.
 pub struct SystemCatalog {
     db: PacmanDatabase,
     rpc: AurRpc,
