@@ -96,8 +96,9 @@ xpm-aur -Sc
 ## How it works
 
 1. `xpm sync` refreshes the sync databases.
-2. The resolver reads installed packages from pacman's local database (where
-   xpm mirrors its transactions) and official metadata from xpm's sync DB.
+2. The resolver reads installed packages from xpm's local database and official
+   metadata from xpm's sync DB. Pacman's databases are read only with
+   `--compat-pacman-db` or `[database] compat_pacman = true`.
 3. Official packages are installed by xpm as one batch.
 4. AUR package bases are cloned/updated and built with `xpm build`. Independent
    bases build concurrently (default: up to 2, or `--jobs`); dependency levels
@@ -142,6 +143,9 @@ chroot = true
 extra_args = []
 jobs = 2               # parallel AUR bases; 0 = auto
 
+[database]
+compat_pacman = false  # also read pacman's local/sync DBs (explicit)
+
 [paths]
 build = "~/.cache/xpm-aur/build"
 packages = "~/.cache/xpm-aur/packages"
@@ -164,14 +168,17 @@ Command-line flags override the file; `XPM_AUR_CONFIG`, `XPM_AUR_STATE` and
   chroot.
 - `xpm-aur` does not sign or publish built packages. A local signed binary
   repository is planned.
-- Do not run `xpm-aur` and yay/pacman concurrently. xpm locks its own
-  transaction and takes pacman's `db.lck` while mirroring, but the two tools do
-  not share a lock for the whole operation.
+- Do not run `xpm-aur` and yay/pacman concurrently when pacman compatibility is
+  enabled. In the native flow xpm-aur reads/writes xpm's DB only; explicit
+  compatibility mode can take pacman's `db.lck` while mirroring.
 
 ## Differences from yay
 
 - Transactions go through xpm; yay uses libalpm.
 - `xpm-aur` requires `makepkg` but does not use pacman for install/remove.
+- Pacman's databases are opt-in (`--compat-pacman-db`); yay relies on them by
+  default. `-Qm`/`adopt` therefore see xpm-managed packages unless compatibility
+  mode is enabled.
 - The state sidecar is explicit and readable; yay relies on the pacman DB.
 - The compatibility layer covers common forms, not every yay flag. Native
   `xpm-aur` subcommands are the source of truth.

@@ -21,7 +21,7 @@ forms before clap parses them.
 
 Supported long options: `--noconfirm`, `--needed`, `--asdeps`, `--devel`, `--nocheck`,
 `--aur`, `--repo`, `--rebuild`, `--print`, `--remove-conflicts`, `--config`,
-`--build-dir`, `--cache-dir`, `--chroot-dir`, `--state`.
+`--build-dir`, `--cache-dir`, `--chroot-dir`, `--state`, `--compat-pacman-db`.
 
 Not implemented: `-F` (files DB), `-Sw` (download only), `-Sc` package cache
 signatures, `--answerclean`, `--editmenu`, `--diffmenu`, `--sudoloop`, and other

@@ -27,4 +27,4 @@ serde_json = "1"
 thiserror = "2"
 tracing = "0.1"
 glob = "0.3"
-xpm-progress = { git = "https://github.com/equislinux/xpm", tag = "xpm-progress-v0.1.0", package = "xpm-progress" }
+xpm-progress = { git = "https://github.com/equislinux/xpm", tag = "xpm-progress-v0.1.1", package = "xpm-progress" }

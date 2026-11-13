@@ -1,8 +1,9 @@
-//! Read-only access to pacman's local and sync databases.
+//! Read-only access to xpm's databases, with opt-in pacman compatibility.
 //!
-//! xpm mirrors its transactions into pacman's database, so this is the
-//! authoritative view of installed packages for both tools. Sync databases are
-//! used only to resolve official packages; transactions always go through xpm.
+//! The native flow reads `/var/lib/xpm` only. Pacman's local/sync databases
+//! are consulted only when `compat_pacman` is enabled, so xpm-aur does not
+//! require pacman to be installed or populated. Transactions always go through
+//! xpm.
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
@@ -63,6 +64,7 @@ pub struct PacmanDatabase {
     root: PathBuf,
     dbpath: PathBuf,
     config: PathBuf,
+    compat_pacman: bool,
     sync_cache: Mutex<Option<Vec<Candidate>>>,
 }
 
@@ -73,11 +75,18 @@ impl Default for PacmanDatabase {
 }
 
 impl PacmanDatabase {
+    /// Native database view: xpm only, no pacman fallback.
     pub fn new(root: &Path) -> Self {
+        Self::with_compat(root, false)
+    }
+
+    /// Build a database view, optionally merging pacman's local/sync DBs.
+    pub fn with_compat(root: &Path, compat_pacman: bool) -> Self {
         Self {
             root: root.to_path_buf(),
             dbpath: root.join("var/lib/pacman"),
             config: root.join("etc/pacman.conf"),
+            compat_pacman,
             sync_cache: Mutex::new(None),
         }
     }
@@ -87,8 +96,13 @@ impl PacmanDatabase {
             root: root.to_path_buf(),
             dbpath: dbpath.to_path_buf(),
             config: config.to_path_buf(),
+            compat_pacman: false,
             sync_cache: Mutex::new(None),
         }
+    }
+
+    pub fn compat_pacman(&self) -> bool {
+        self.compat_pacman
     }
 
     pub fn root(&self) -> &Path {
@@ -124,21 +138,23 @@ impl PacmanDatabase {
         }
     }
 
-    /// Sync databases are read from xpm's own database when present. This is
-    /// essential: `xpm sync` refreshes `/var/lib/xpm/sync`, not pacman's.
+    /// Sync databases are read from xpm's own database. Pacman's sync DB is
+    /// only a fallback in explicit compatibility mode; `xpm sync` refreshes
+    /// `/var/lib/xpm/sync`, not pacman's.
     pub fn sync_path(&self) -> PathBuf {
         let xpm_sync = self.xpm_db_path().join("sync");
-        if contains_sync_db(&xpm_sync) {
+        if contains_sync_db(&xpm_sync) || !self.compat_pacman {
             xpm_sync
         } else {
             self.dbpath.join("sync")
         }
     }
 
-    /// Whether an xpm or pacman sync database can be read.
+    /// Whether an xpm sync database (or, in compatibility mode, pacman's) can
+    /// be read.
     pub fn has_sync(&self) -> bool {
         contains_sync_db(&self.xpm_db_path().join("sync"))
-            || contains_sync_db(&self.dbpath.join("sync"))
+            || (self.compat_pacman && contains_sync_db(&self.dbpath.join("sync")))
     }
 
     pub fn config_path(&self) -> &Path {
@@ -148,15 +164,17 @@ impl PacmanDatabase {
     /// Load all installed packages. There is no cache because xpm transactions
     /// can change this database between commands.
     ///
-    /// Both databases are merged so mixed pacman/xpm systems keep working. For
-    /// the same name the newest version wins; on a tie the xpm record is
+    /// Pacman's local database is merged only in explicit compatibility mode.
+    /// For the same name the newest version wins; on a tie the xpm record is
     /// authoritative because xpm owns its transactions.
     pub fn installed(&self) -> Result<Vec<Candidate>, DbError> {
         let mut packages: std::collections::BTreeMap<String, Candidate> =
             std::collections::BTreeMap::new();
 
-        for candidate in installed_from_pacman(&self.local_path())? {
-            packages.insert(candidate.meta.name.clone(), candidate);
+        if self.compat_pacman {
+            for candidate in installed_from_pacman(&self.local_path())? {
+                packages.insert(candidate.meta.name.clone(), candidate);
+            }
         }
         for candidate in installed_from_xpm(&self.xpm_local_path())? {
             let replace = packages
@@ -294,10 +312,14 @@ impl PacmanDatabase {
 
     fn repo_order(&self) -> Vec<String> {
         let mut order = Vec::new();
-        let mut visited = HashSet::new();
-        collect_repo_order(&self.config, 0, &mut visited, &mut order);
+        if self.compat_pacman {
+            let mut visited = HashSet::new();
+            collect_repo_order(&self.config, 0, &mut visited, &mut order);
+        } else if let Ok(text) = std::fs::read_to_string(self.xpm_config_path()) {
+            order = parse_xpm_repo_order(&text);
+        }
         if order.is_empty() {
-            order = vec!["core".into(), "extra".into(), "multilib".into(), "x".into()];
+            order = vec!["x".into(), "core".into(), "extra".into(), "multilib".into()];
         }
         order
     }
@@ -499,6 +521,36 @@ fn collect_repo_order(
             collect_repo_order(&included, depth + 1, visited, order);
         }
     }
+}
+
+fn parse_xpm_repo_order(text: &str) -> Vec<String> {
+    let mut order = Vec::new();
+    let mut in_repo = false;
+    for raw in text.lines() {
+        let line = strip_toml_comment(raw).trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with("[[") && line.ends_with("]]") {
+            in_repo = line[2..line.len() - 2].trim() == "repo";
+            continue;
+        }
+        if !in_repo {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() != "name" {
+            continue;
+        }
+        if let Some(name) = toml_string(value.trim()).filter(|name| !name.is_empty()) {
+            if !order.contains(&name) {
+                order.push(name);
+            }
+        }
+    }
+    order
 }
 
 fn parse_xpm_db_path(text: &str) -> Option<PathBuf> {
@@ -865,7 +917,7 @@ mod tests {
             ],
         );
 
-        let db = PacmanDatabase::new(&root);
+        let db = PacmanDatabase::with_compat(&root, true);
         let installed = db.installed().unwrap();
         assert_eq!(installed.len(), 2);
         let foo = installed
@@ -903,7 +955,7 @@ mod tests {
             "foo",
             &[("version", "2.0-1\n"), ("reason", "explicit\n")],
         );
-        let db = PacmanDatabase::new(&root);
+        let db = PacmanDatabase::with_compat(&root, true);
         let installed = db.installed().unwrap();
         assert_eq!(installed.len(), 1);
         assert_eq!(installed[0].meta.version.to_string(), "2.0-1");
@@ -919,7 +971,7 @@ mod tests {
         let root = temp_root();
         write_pacman_entry(&root, "bar", "3.1-2");
 
-        let db = PacmanDatabase::new(&root);
+        let db = PacmanDatabase::with_compat(&root, true);
         let installed = db.installed().unwrap();
         assert_eq!(installed.len(), 1);
         assert_eq!(installed[0].meta.name, "bar");
@@ -997,7 +1049,7 @@ mod tests {
         write_file(&conf_dir.join("repos/b.conf"), "[x-custom]\n");
         write_file(&conf_dir.join("repos/nested.conf"), "[nested]\n");
 
-        let db = PacmanDatabase::new(&root);
+        let db = PacmanDatabase::with_compat(&root, true);
         assert_eq!(db.repo_order(), vec!["core", "extra", "nested", "x-custom"]);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -1009,7 +1061,7 @@ mod tests {
             &root.join("etc/pacman.conf"),
             "[core]\nInclude = pacman.conf\nInclude = /does/not/exist.conf\n",
         );
-        let db = PacmanDatabase::new(&root);
+        let db = PacmanDatabase::with_compat(&root, true);
         assert_eq!(db.repo_order(), vec!["core"]);
         std::fs::remove_dir_all(root).unwrap();
 
@@ -1017,8 +1069,8 @@ mod tests {
         let db = PacmanDatabase::new(&root);
         assert_eq!(
             db.repo_order(),
-            vec!["core", "extra", "multilib", "x"],
-            "missing pacman.conf uses the built-in order"
+            vec!["x", "core", "extra", "multilib"],
+            "missing xpm.conf uses the native built-in order"
         );
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -1030,8 +1082,12 @@ mod tests {
         assert!(!db.has_sync());
 
         write_file(&root.join("var/lib/pacman/sync/core.db"), "");
-        assert!(db.has_sync());
-        assert_eq!(db.sync_path(), root.join("var/lib/pacman/sync"));
+        assert!(!db.has_sync(), "native mode ignores pacman's sync DB");
+        assert_eq!(db.sync_path(), root.join("var/lib/xpm/sync"));
+
+        let compat = PacmanDatabase::with_compat(&root, true);
+        assert!(compat.has_sync());
+        assert_eq!(compat.sync_path(), root.join("var/lib/pacman/sync"));
         std::fs::remove_dir_all(root).unwrap();
 
         let root = temp_root();
@@ -1071,7 +1127,7 @@ mod tests {
         let encoder = builder.into_inner().unwrap();
         encoder.finish().unwrap();
 
-        let db = PacmanDatabase::new(&root);
+        let db = PacmanDatabase::with_compat(&root, true);
         let installed = db.installed().unwrap();
         assert_eq!(installed.len(), 1);
         assert_eq!(installed[0].meta.name, "foo");
@@ -1117,6 +1173,35 @@ mod tests {
             .unwrap();
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].meta.name, "xpm-only");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn native_mode_ignores_pacman_databases() {
+        let root = temp_root();
+        write_pacman_entry(&root, "pacman-only", "1.0-1");
+        write_file(&root.join("var/lib/pacman/sync/core.db"), "");
+
+        let db = PacmanDatabase::new(&root);
+        assert!(db.installed().unwrap().is_empty());
+        assert!(!db.has_sync());
+        assert_eq!(db.sync_path(), root.join("var/lib/xpm/sync"));
+
+        let compat = PacmanDatabase::with_compat(&root, true);
+        assert_eq!(compat.installed().unwrap().len(), 1);
+        assert!(compat.has_sync());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn native_repo_order_reads_xpm_conf() {
+        let root = temp_root();
+        write_file(
+            &root.join("etc/xpm.conf"),
+            "[options]\ndb_path = \"/var/lib/xpm\"\n\n[[repo]]\nname = \"x\"\nserver = [\"file:///x\"]\n\n[[repo]]\nname = \"core\"\nserver = [\"https://mirror/core\"]\n",
+        );
+        let db = PacmanDatabase::new(&root);
+        assert_eq!(db.repo_order(), vec!["x", "core"]);
         std::fs::remove_dir_all(root).unwrap();
     }
 

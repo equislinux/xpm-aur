@@ -1265,8 +1265,8 @@ dependencies = [
 
 [[package]]
 name = "xpm-progress"
-version = "0.1.0"
-source = "git+https://github.com/equislinux/xpm?tag=xpm-progress-v0.1.0#a3d62e3dd5029295805cf4c56962c30521084c57"
+version = "0.1.1"
+source = "git+https://github.com/equislinux/xpm?tag=xpm-progress-v0.1.1#451cc9bcdea1ae8f983864918bd5ee6bdf633335"
 dependencies = [
  "libc",
 ]

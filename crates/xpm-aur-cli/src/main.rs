@@ -99,6 +99,10 @@ struct Cli {
     #[arg(long, global = true)]
     state: Option<PathBuf>,
 
+    /// Also read pacman's local/sync DBs (explicit compatibility mode).
+    #[arg(long, global = true)]
+    compat_pacman_db: bool,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -175,7 +179,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         .unwrap_or_else(StateStore::default_path);
 
     let runner: Arc<dyn CommandRunner> = Arc::new(SystemRunner);
-    let database = PacmanDatabase::new(Path::new("/"));
+    let compat_pacman_db = cli.compat_pacman_db || config.compat_pacman_db;
+    let database = PacmanDatabase::with_compat(Path::new("/"), compat_pacman_db);
     let rpc = AurRpc::new(config.rpc_url.clone());
     let catalog = SystemCatalog::new(database, rpc);
     let xpm = XpmClient::new(
