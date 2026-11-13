@@ -531,8 +531,9 @@ fn parse_xpm_repo_order(text: &str) -> Vec<String> {
         if line.is_empty() {
             continue;
         }
-        if line.starts_with("[[") && line.ends_with("]]") {
-            in_repo = line[2..line.len() - 2].trim() == "repo";
+        if line.starts_with('[') && line.ends_with(']') {
+            let section = line.trim_start_matches('[').trim_end_matches(']').trim();
+            in_repo = section == "repo";
             continue;
         }
         if !in_repo {
