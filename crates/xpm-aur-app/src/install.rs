@@ -144,9 +144,9 @@ impl App {
 
         let aur_bases = plan.aur.len();
         let aur_packages = plan.aur.iter().map(|build| build.packages.len()).sum();
-        transaction.print("build", 2, 3, "AUR package bases");
-        let progress =
-            crate::progress::PhaseProgress::new(plan.aur.iter().map(|build| build.base.as_str()));
+        let progress = crate::progress::PhaseProgress::new_build(
+            plan.aur.iter().map(|build| build.base.as_str()),
+        );
         scheduler::run(
             &plan.aur,
             options.jobs,
