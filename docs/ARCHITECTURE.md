@@ -95,6 +95,17 @@ Builds may overlap; xpm installs and sidecar updates are serialized.
 - AUR history: `$XDG_STATE_HOME/xpm-aur/state.json`, lock-protected and written
   atomically. It is a sidecar, not a replacement for the package DB.
 
+## Progress
+
+`xpm-aur-app` uses the shared `PhaseProgress` renderer from
+`xpm-progress` but with two distinct fills:
+
+- `new_network` for `sync`/`resolve` (`x`);
+- `new_build` for `checkout`/`building`/`installing` (`/`).
+
+The shared renderer keeps column alignment; it does not combine download,
+verify and install into one line. Package downloads are delegated to xpm.
+
 ## Failure model
 
 - AUR, DB, build, process and state failures are typed errors in their crate.
