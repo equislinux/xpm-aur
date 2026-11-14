@@ -70,13 +70,13 @@ impl App {
             return Ok(InstallOutcome::default());
         }
 
-        let transaction = crate::progress::PhaseProgress::new(["sync", "resolve", "build"]);
-        transaction.print("sync", 0, 3, "official databases");
+        let network = crate::progress::PhaseProgress::new_network(["sync", "resolve"]);
+        network.print("sync", 0, 2, "official databases");
 
         // Refresh official databases through xpm before reading them. This is
         // the only safe way to avoid resolving against a stale sync DB.
         self.xpm.sync()?;
-        transaction.print("resolve", 1, 3, "dependency plan");
+        network.print("resolve", 1, 2, "dependency plan");
 
         let resolver = Resolver::new(
             &self.catalog,
