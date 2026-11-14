@@ -5,7 +5,9 @@ builds source packages with `makepkg`, and performs every package transaction
 through **xpm** instead of pacman.
 
 `xpm-aur` is a companion to xpm, not a replacement for pacman. `makepkg` still
-comes from the pacman package, and builds still execute the PKGBUILD as bash.
+comes from the pacman package when source builds are needed (optional build
+tool, not a transaction backend), and builds still execute the PKGBUILD as
+bash.
 What changes is the transaction backend: xpm owns installs, removals and the
 package database, and AUR metadata lives in a small, explicit sidecar.
 
@@ -32,6 +34,17 @@ package database, and AUR metadata lives in a small, explicit sidecar.
 - Foreign/installed queries (`-Qm`) and `--nocheck`.
 - yay/pacman-style command forms: `-S`, `-Syu`, `-Ss`, `-Si`, `-Rns`, `-Qm`, `-Sc`.
 
+### Progress bars
+
+xpm-aur has its own phase bars, separate from xpm's package progress:
+
+- `sync` and `resolve` → cross fill `[xxxxxxxxxx----------]`;
+- `checkout`, `building` and `installing` → slash fill
+  `[//////////----------]`.
+
+Downloads performed through xpm use xpm's own cross-fill download bars. There
+is no combined progress line.
+
 ## Install
 
 From source:
@@ -47,7 +60,7 @@ From the X repository:
 xpm install xpm-aur
 ```
 
-Runtime requirements: `xpm >= 0.1.0-30`, `pacman` (for `makepkg`), `git`,
+Runtime requirements: `xpm >= 0.1.0-30`, `git`,
 `base-devel`, `arch-install-scripts` (for `arch-chroot`), and a normal user for
 building. xpm-aur invokes the configured sudo command for xpm transactions and
 for `xpm build` when it needs a chroot.
