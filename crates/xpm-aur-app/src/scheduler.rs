@@ -181,6 +181,28 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn returns_build_error_without_installing() {
+        use xpm_aur_core::error::CoreError;
+
+        let result = super::run(
+            &[base("broken", &[])],
+            1,
+            |_, _| {
+                Err(super::AppError::Core(CoreError::Invariant(
+                    "simulated build failure".into(),
+                )))
+            },
+            |_, _| panic!("installation called after a build failure"),
+        );
+
+        assert!(matches!(
+            result,
+            Err(super::AppError::Core(CoreError::Invariant(message)))
+                if message == "simulated build failure"
+        ));
+    }
+
     fn base(name: &str, depends_on: &[&str]) -> AurBuild {
         AurBuild {
             base: name.into(),
